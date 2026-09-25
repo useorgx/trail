@@ -73,7 +73,9 @@ export function threadify(s) {
   const steers = { human: 0, cont: 0, hook: 0, schedule: 0 };
   const recentErrs = []; const walls = new Map();
   const open = (origin, title, i) => { cur = { id: 'T' + (T.length + 1), origin, title, at: i, moves: [], backs: [], errs: 0, subj: new Map(), claim: [], notes: [], t0: s.ev[i]?.ts, t1: s.ev[i]?.ts }; T.push(cur); return cur; };
+  const own = new Array(s.ev.length);
   for (let i = 0; i < s.ev.length; i++) {
+    if (i > 0) own[i - 1] = cur;
     const e = s.ev[i];
     if (cur && e.ts) cur.t1 = e.ts;
     if (e.k === 'ask') {
@@ -125,6 +127,9 @@ export function threadify(s) {
       else if (e.lane === 'check' && /[cr]/.test(cur.moves.join('').slice(0, -1))) { cur.recovered = true; cur = cur.resume; }
     }
   }
+  if (s.ev.length) own[s.ev.length - 1] = cur;
+  // Event spans each thread owns: the evidence a reviewer (human or model) reads.
+  for (let i = 0; i < own.length; i++) { const t = own[i]; if (!t) continue; const sp = (t.spans ||= []); const last = sp[sp.length - 1]; if (last && last[1] === i - 1) last[1] = i; else sp.push([i, i]); }
   const threads = T.filter((t) => t.moves.length || t.origin === 'ask' || t.origin === 'schedule');
   const lastT = cur; threads.forEach((t, k) => finish(t, t === lastT, threads.length));
   const errs = s.ev.filter((e) => e.err).length, denied = s.ev.filter((e) => e.denied).length;

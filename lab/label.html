@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>trail · labeling bench</title>
+<style>
+:root{--bg:#0B0C0E;--panel:#121417;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.16);--ink:#ECEDEE;--mid:#A7ACB3;--dim:#6C727A;--lime:#BFFF00;--teal:#2DD4BF;--iris:#8B8CFF;--coral:#FF7A66;--amber:#F5B700;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;height:100vh;display:grid;grid-template-rows:auto 1fr}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{font-weight:600;display:flex;gap:8px;align-items:center}.brand i{width:10px;height:10px;background:var(--lime);border-radius:2px}
+.meta{color:var(--mid)}.bar{flex:1;min-width:120px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--lime)}
+main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(360px,1fr);min-height:0}
+#ev{overflow:auto;padding:14px 16px;font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;border-right:1px solid var(--line)}
+#ev .ctx{color:var(--dim)}#ev .person{color:var(--lime)}#ev .agent{color:var(--ink)}#ev .tool{color:var(--mid)}#ev .bad{color:var(--coral)}
+aside{overflow:auto;padding:14px 16px;display:grid;gap:14px;align-content:start}
+h2{margin:0 0 6px;font:500 11px/1 ui-monospace,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.opts{display:flex;flex-wrap:wrap;gap:6px}
+.opt{all:unset;cursor:pointer;padding:6px 9px;border:1px solid var(--line2);border-radius:6px;color:var(--mid)}
+.opt kbd{font:11px ui-monospace,Menlo,monospace;color:var(--dim);margin-right:6px}
+.opt[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}.opt[aria-pressed=true] kbd{color:#444}
+.opt:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+input[type=text],textarea{width:100%;background:var(--panel);border:1px solid var(--line2);color:var(--ink);border-radius:6px;padding:7px 9px;font:inherit}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:5px 6px;border-top:1px solid var(--line);vertical-align:top}th{color:var(--dim);font-weight:500}
+.agree{color:var(--teal)}.split{color:var(--amber)}
+.save{all:unset;cursor:pointer;background:var(--lime);color:#111;font-weight:600;padding:9px 14px;border-radius:7px;text-align:center}
+.hint{color:var(--dim);font-size:12px}.tag{font:500 11px ui-monospace,Menlo,monospace;padding:2px 6px;border-radius:4px;border:1px solid var(--line2);color:var(--mid)}
+.tag.rep{border-color:var(--amber);color:var(--amber)}
+@media (max-width:900px){main{grid-template-columns:1fr}#ev{max-height:50vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body>
+<header><div class="brand"><i></i>labeling bench</div><div class="meta" id="where"></div><div class="bar"><i id="pbar" style="width:0"></i></div><div class="meta" id="prog"></div></header>
+<main><div id="ev">loading…</div>
+<aside>
+  <div class="hint">Read the events on the left, decide from what they show. Codebook: boundary → origin → status → title. <b>Enter</b> saves.</div>
+  <div><h2>Boundary · is this one thread?</h2><div class="opts" id="boundary"></div></div>
+  <div><h2>Origin</h2><div class="opts" id="origin"></div></div>
+  <div><h2>Status</h2><div class="opts" id="status"></div></div>
+  <div><h2>Title <span class="hint">(t toggles “ok”)</span></h2><div class="opts" id="titleok"></div><input type="text" id="title" placeholder="better title, if not ok" aria-label="Better title"></div>
+  <div><h2>Note <span class="hint">(optional — why, or what the codebook is missing)</span></h2><textarea id="note" rows="2" aria-label="Note"></textarea></div>
+  <button class="save" id="save">Save and next ⏎</button>
+  <div id="juryBox"></div>
+</aside></main>
+<script>
+const K = new URLSearchParams(location.search).get('k');
+const F = { boundary: [['right','1'],['too_big','2'],['too_small','3'],['not_a_thread','4']], origin: [['asked','a'],['plan','p'],['found','f'],['recovery','r'],['wall','w'],['scheduled','s']], status: [['done','d'],['dropped','x'],['parked','k'],['open','o'],['unclear','u']], titleok: [['ok','t'],['rename','']] };
+let cur = null, sel = {}, t0 = 0;
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+function buttons() { for (const [f, opts] of Object.entries(F)) document.getElementById(f).innerHTML = opts.map(([v, k]) => `<button class="opt" data-f="${f}" data-v="${v}" aria-pressed="${sel[f] === v}">${k ? `<kbd>${k}</kbd>` : ''}${v.replace('_', ' ')}</button>`).join(''); }
+document.addEventListener('click', (e) => { const b = e.target.closest('.opt'); if (!b) return; sel[b.dataset.f] = b.dataset.v; buttons(); });
+function renderEvidence(t) {
+  return t.split('\n').map((l) => { const ctx = /^\[\d+\]~/.test(l); const cls = ctx ? 'ctx' : /PERSON/.test(l.slice(0, 30)) ? 'person' : /AGENT:/.test(l.slice(0, 30)) ? 'agent' : /DENIED|FAILED/.test(l) ? 'bad' : 'tool'; return `<div class="${cls}">${esc(l)}</div>`; }).join('');
+}
+async function load() {
+  cur = await fetch('next?k=' + K).then((r) => r.json());
+  if (cur.done) { document.getElementById('ev').textContent = `All caught up. ${cur.labeled} threads labeled.`; return; }
+  const p = cur.progress; document.getElementById('prog').textContent = `${p.labeled} labeled · ${p.left} left · ${p.repeats} repeats`;
+  document.getElementById('pbar').style.width = (100 * p.labeled / Math.max(p.total, 1)) + '%';
+  document.getElementById('where').innerHTML = `${esc(cur.project)} · ${cur.client} · ${new Date(cur.start).toLocaleDateString()} ${cur.repeat ? '<span class="tag rep">blind</span>' : cur.blind ? '<span class="tag">blind</span>' : ''}`;
+  document.getElementById('ev').innerHTML = renderEvidence(cur.evidence); document.getElementById('ev').scrollTop = 0;
+  sel = cur.prefill ? { boundary: cur.prefill.boundary, origin: cur.prefill.origin, status: cur.prefill.status, titleok: 'ok' } : { titleok: 'ok' };
+  document.getElementById('title').value = cur.prefill?.title || cur.pred?.title || ''; document.getElementById('note').value = '';
+  buttons();
+  const agree = (f) => { const vs = cur.jury.map((j) => j[f]); return vs.every((v) => v === vs[0]) ? 'agree' : 'split'; };
+  document.getElementById('juryBox').innerHTML = cur.jury.length ? `<h2>Jury (models, not truth)</h2><table><tr><th></th><th class="${agree('boundary')}">boundary</th><th class="${agree('origin')}">origin</th><th class="${agree('status')}">status</th></tr>${cur.jury.map((j) => `<tr><td>${j.model}</td><td>${j.boundary}</td><td>${j.origin}</td><td>${j.status}</td></tr><tr><td></td><td colspan="3" class="hint">${esc(j.evidence)}</td></tr>`).join('')}</table>` : `<div class="hint">${cur.blind ? 'Blind item: jury hidden so your label is independent.' : 'No jury labels for this thread yet.'}</div>`;
+  t0 = Date.now();
+}
+async function save() {
+  if (!sel.boundary || !sel.origin || !sel.status) { document.getElementById('save').textContent = 'Pick boundary, origin and status'; setTimeout(() => (document.getElementById('save').textContent = 'Save and next ⏎'), 1200); return; }
+  const title = document.getElementById('title').value;
+  await fetch('label?k=' + K, { method: 'POST', body: JSON.stringify({ key: cur.key, boundary: sel.boundary, origin: sel.origin, status: sel.status, title_ok: sel.titleok === 'ok', title, note: document.getElementById('note').value, repeat: cur.repeat, blind: cur.blind, prefill: cur.prefill, seconds: (Date.now() - t0) / 1000 }) });
+  load();
+}
+document.getElementById('save').onclick = save;
+document.addEventListener('keydown', (e) => {
+  if (e.target.matches('input,textarea')) { if (e.key === 'Enter' && !e.shiftKey && e.target.id === 'title') { e.preventDefault(); save(); } if (e.key === 'Escape') e.target.blur(); return; }
+  if (e.key === 'Enter') { e.preventDefault(); return save(); }
+  if (e.key === 't') { sel.titleok = sel.titleok === 'ok' ? 'rename' : 'ok'; buttons(); if (sel.titleok === 'rename') { document.getElementById('title').focus(); e.preventDefault(); } return; }
+  for (const [f, opts] of Object.entries(F)) for (const [v, k] of opts) if (k && e.key === k) { sel[f] = v; buttons(); return; }
+});
+load();
+</script></body></html>
