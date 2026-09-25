@@ -35,6 +35,7 @@ let done = 0, cost = 0, failed = 0; const t0 = Date.now();
 async function worker() {
   while (jobs.length) {
     const { m, it, f } = jobs.shift();
+    if (fs.existsSync(f)) { done++; continue; }
     const evidence = fs.readFileSync(path.join(L.evidence, safeName(it.key) + '.txt'), 'utf8');
     const prompt = `Session in ${it.project} (${it.client}). Other threads in this session: ${it.siblings.join(' | ')}\n\nEvents this thread owns ("~" = context before it, not part of it):\n${evidence}`;
     try { const r = await ask(m, prompt); cost += r.cost; fs.writeFileSync(f, JSON.stringify({ model: m, at: new Date().toISOString(), ...r })); }

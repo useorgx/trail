@@ -32,9 +32,10 @@ export async function readSession(file, client) { return client === 'codex' ? re
 /** Render the events a thread owns, numbered, with a little lead-in context. Capped, middle elided. */
 export function renderEvidence(s, spans, cap = 14000) {
   const own = new Set(); for (const [a, b] of spans) for (let i = a; i <= b; i++) own.add(i);
-  const first = spans[0]?.[0] ?? 0; const lines = [];
+  const first = spans[0]?.[0] ?? 0; const last = spans[spans.length - 1]?.[1] ?? first; const lines = [];
+  const after = new Set(); for (let i = last + 1, n = 0; i < s.ev.length && n < 3; i++, n++) after.add(i);
   for (let i = Math.max(0, first - 3); i < s.ev.length; i++) {
-    if (!own.has(i) && i >= first) continue;
+    if (!own.has(i) && i >= first && !after.has(i)) continue;
     const e = s.ev[i]; const mark = own.has(i) ? ' ' : '~';
     let line;
     if (e.k === 'ask') line = `[${i}]${mark}PERSON${e.who !== 'human' ? ` (${e.who})` : ''}: ${e.text}`;
@@ -43,6 +44,9 @@ export function renderEvidence(s, spans, cap = 14000) {
     else line = `[${i}]${mark}TOOL ${e.tool}: ${e.target}${e.err ? `  => ${e.denied ? 'DENIED' : 'FAILED'}: ${String(e.errText).replace(/\s+/g, ' ').slice(0, 220)}` : ''}${e.out ? `  => ${String(e.out).replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
     lines.push(line.replace(/\s+/g, ' ').slice(0, 700));
   }
+  // Say plainly where the thread stops relative to the session, so "still open" vs "moved on" is decidable.
+  const remaining = s.ev.length - 1 - last;
+  lines.push(remaining <= 0 ? `[end] The session transcript ends at this thread's last event [${last}].` : `[end] This thread's last event is [${last}]. The session continued for ${remaining} more events (other threads; the first ${Math.min(3, remaining)} are shown with ~).`);
   let text = lines.join('\n');
   if (text.length > cap) { const head = text.slice(0, cap * 0.55); const tail = text.slice(-cap * 0.4); text = `${head}\n… [${lines.length} events total; middle omitted] …\n${tail}`; }
   return text;

@@ -31,6 +31,8 @@ for (const it of items) {
     const now = new Set(); for (const [a, b] of t?.spans || []) for (let i = a; i <= b; i++) now.add(i);
     const inter = [...own].filter((i) => now.has(i)).length; const jac = inter / Math.max(1, new Set([...own, ...now]).size);
     pred.set(it.key, t ? { ...toCodebook(t), boundaryStable: jac >= 0.9 } : null);
+  } else if (labeler.startsWith('model:')) {
+    try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status }); } catch { pred.set(it.key, null); }
   } else if (labeler.startsWith('jury:')) {
     const m = labeler.slice(5);
     if (m === 'majority') { const js = ['haiku', 'sonnet', 'opus'].map((x) => juryOf(x, it)); pred.set(it.key, { origin: vote(js.map((j) => j?.origin)), status: vote(js.map((j) => j?.status)), boundary: vote(js.map((j) => j?.boundary)) }); }
