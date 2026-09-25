@@ -1,0 +1,20 @@
+name: Publish to npm
+# Trusted publishing (OIDC): no npm token is stored anywhere.
+# One-time setup after the first manual publish: npmjs.com → @useorgx/trail → Settings →
+# Trusted publisher → GitHub Actions, repo useorgx/trail, workflow publish.yml.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - run: npm install -g npm@latest
+      - name: Tag must match package.json
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - run: npm test
+      - run: npm publish --provenance --access public

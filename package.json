@@ -1,0 +1,42 @@
+{
+  "name": "@useorgx/trail",
+  "version": "0.1.0",
+  "description": "See what your coding agents actually did. Reads Claude Code and Codex history into threads of work, walls, and lessons \u2014 on your machine, in seconds, with no model and no upload.",
+  "type": "module",
+  "bin": {
+    "trail": "bin/trail.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "Apache-2.0",
+  "author": "OrgX <team@useorgx.com>",
+  "homepage": "https://useorgx.com",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "agents",
+    "observability",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/useorgx/trail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/useorgx/trail/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
