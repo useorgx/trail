@@ -16,20 +16,30 @@ const CLIENT = { claude: 'claude-code', codex: 'codex' };
 const ORIGIN = (t) => (t.origin === 'surprise' ? ({ wall: 'wall', recovery: 'recovery' }[t.kind] || 'found') : ({ ask: 'asked', plan: 'plan', schedule: 'scheduled', agent: 'plan' }[t.origin] || 'asked'));
 const STATUS = { outcome: 'done', abandoned: 'dropped', open: 'open', parked: 'parked', 'outcome?': 'unclear' };
 
-/** The key the OrgX wizard already stored: env first, then the macOS keychain entry the wizard writes. */
+/** The OpenClaw config file the wizard falls back to (plugins.entries["openclaw-plugin"|"orgx"].config.apiKey). */
+function openclawKey() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.openclaw', 'openclaw.json'), 'utf8'));
+    const entries = cfg?.plugins?.entries || {}; const entry = entries['openclaw-plugin'] || entries.orgx;
+    const key = typeof entry?.config?.apiKey === 'string' ? entry.config.apiKey.trim() : '';
+    return key ? { key, from: 'OpenClaw config (~/.openclaw/openclaw.json)', baseUrl: entry.config.baseUrl } : null;
+  } catch { return null; }
+}
+
+/** The key the OrgX wizard already uses, in the wizard's own order: env, keychain store, OpenClaw config. Never printed. */
 export function credential() {
   if (process.env.ORGX_API_KEY) return { key: process.env.ORGX_API_KEY.trim(), from: 'ORGX_API_KEY' };
   if (process.platform === 'darwin') {
     const args = ['find-generic-password', '-s', '@useorgx/wizard', '-a', 'orgx-api-key'];
     try {
-      const key = execFileSync('security', [...args, '-w'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000 }).toString().trim();
+      const key = execFileSync('security', [...args, '-w'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 8_000 }).toString().trim();
       if (key) return { key, from: 'keychain (@useorgx/wizard)' };
     } catch {
       // The entry can exist while macOS refuses to hand it to a different program until you allow it.
-      try { execFileSync('security', args, { stdio: 'ignore' }); return { key: null, from: 'keychain', blocked: true }; } catch {}
+      try { execFileSync('security', args, { stdio: 'ignore' }); const oc = openclawKey(); return oc || { key: null, from: 'keychain', blocked: true }; } catch {}
     }
   }
-  return null;
+  return openclawKey();
 }
 export function baseUrl(flag) {
   if (flag) return flag.replace(/\/$/, '');
