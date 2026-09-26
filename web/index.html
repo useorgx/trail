@@ -24,6 +24,7 @@ h2{margin:0;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:v
 .wall .more{display:none;color:var(--mid);font-size:12px;margin-top:6px}.wall.open .more{display:block}
 .fix{color:var(--ink);border-left:2px solid var(--lime);padding-left:8px;margin-top:6px}
 .adopted{color:var(--teal)}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.act{all:unset;cursor:pointer;font-size:12px;padding:5px 9px;border-radius:6px;border:1px solid var(--line2);color:var(--ink)}.act:hover{border-color:var(--lime)}.act:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
 .braid{font:12px/1.2 ui-monospace,Menlo,monospace;word-break:break-all;letter-spacing:1px}
 .p{color:var(--dim)}.c{color:var(--lime)}.h{color:var(--teal)}.s{color:var(--ink)}.X,.D{color:var(--coral)}.d{color:var(--iris)}
 .status{font:500 11px ui-monospace,Menlo,monospace;padding:2px 6px;border-radius:4px;border:1px solid currentColor}
@@ -155,8 +156,10 @@ function walls() {
       <div class="more">${sp}<div>${fmt(w.calls)} calls · first ${day(Date.parse(w.first))} · last ${day(Date.parse(w.last))} · ${Object.entries(w.clients).map(([k, v]) => k + ' ' + v).join(' · ')}</div>
       ${w.samples.map((s) => `<div class="note">${esc(s)}</div>`).join('')}
       <div class="fix">${esc(w.rule)}</div>
-      ${w.adopted ? `<div class="adopted">since adopting: ${w.adopted.after} sessions hit it (was ${w.adopted.beforePerDay.toFixed(2)}/day)</div>` : `<div class="meta">Adopt it from the terminal: <span class="mono">trail explore</span> → Walls → <span class="mono">a</span></div>`}</div></div>`;
+      ${w.adopted ? `<div class="adopted" style="color:var(--${w.effect?.tone === 'amber' ? 'amber' : w.effect?.tone === 'coral' ? 'coral' : 'teal'})">adopted · ${esc(w.effect?.text || '')}</div>` : ''}
+      <div class="acts"><button class="act" data-copy="${esc(w.action.prompt)}">Copy prompt for your agent</button><button class="act" data-copy="${esc(w.action.rule)}">Copy rule</button><button class="act" data-copy="${esc(w.action.command)}">Copy command</button></div></div></div>`;
   }).join('');
+  document.querySelectorAll('.act').forEach((b) => { b.onclick = async (e) => { e.stopPropagation(); const t = b.dataset.copy; try { await navigator.clipboard.writeText(t); } catch { const ta = document.createElement('textarea'); ta.value = t; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); } const o = b.textContent; b.textContent = 'Copied'; setTimeout(() => (b.textContent = o), 1200); }; });
   document.querySelectorAll('.wall').forEach((el) => { const tg = () => el.classList.toggle('open'); el.onclick = tg; el.onkeydown = (e) => { if (e.key === 'Enter') tg(); }; });
 }
 function sparkline() {

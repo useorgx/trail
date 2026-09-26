@@ -2,6 +2,10 @@
 import { palette, clip, braid, bar, fmt, originMark } from './term.mjs';
 import { scan } from '../scan.mjs';
 import { wallById } from '../walls.mjs';
+import { loadSessions, loadAdoptions } from '../store.mjs';
+import { corpus } from '../metrics.mjs';
+import { buildGuard } from '../guard.mjs';
+import { ruleFor } from '../adopt.mjs';
 
 export async function scanView(opts) {
   const C = palette(opts.plain); const out = process.stdout; const live = !C.plain && out.isTTY;
@@ -49,6 +53,8 @@ export async function scanView(opts) {
   const res = await scan({ ...opts, onSession, onProgress: (s) => { st = s; } });
   if (timer) { clearInterval(timer); frame(); await new Promise((r) => setTimeout(r, 450)); }
   restore();
+  // Refresh the guard's evidence from everything read so far.
+  try { buildGuard(corpus(loadSessions(), loadAdoptions()).walls.map((w) => ({ ...w, rule: ruleFor(w) }))); } catch {}
   const say = (s) => out.write(s + '\n');
   say('');
   say(`  ${C.b}${res.todo ? `Read ${fmt(res.todo)} sessions (${fmt(res.bytes / 1e6)} MB) in ${res.secs.toFixed(1)}s` : 'Up to date. Nothing new since the last read.'}${C.r}${C.mid} · $0.00 · nothing left this machine${C.r}`);

@@ -82,3 +82,37 @@ test('sync outlines carry no text in metadata_only', async () => {
   assert.ok(!JSON.stringify(meta).includes('abc'), 'raw session id never sent');
   assert.equal(toSession(s, true).threads[0].title, 'Private title', 'titles only with --with-titles');
 });
+
+test('guard: denies known walls only in dontAsk sessions, never allows, never throws', async () => {
+  const fs = await import('node:fs'); const { runHook, buildGuard, matchWall } = await import('../src/guard.mjs');
+  buildGuard([{ sig: 'denied-chain', name: 'Loops and chained shell commands get denied', sessions: 12, rule: 'Run one simple command per call.' }]);
+  const chain = { tool_name: 'Bash', tool_input: { command: 'cd a && ls' }, session_id: 's' };
+  const out = await runHook(JSON.stringify({ ...chain, permission_mode: 'dontAsk' }));
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /known wall/);
+  assert.equal(await runHook(JSON.stringify({ ...chain, permission_mode: 'default' })), null, 'other modes: no opinion');
+  assert.equal(await runHook('not json'), null);
+  assert.equal(matchWall('Bash', { command: 'git status' }), null);
+  assert.equal(matchWall('Read', { file_path: '/Users/x/.claude/settings.json' }), 'denied-home');
+});
+
+test('adoption effects compare like with like and flag a permission-mode switch', async () => {
+  const { adoptionEffect } = await import('../src/metrics.mjs');
+  const mk = (i, mode, hit, day) => ({ id: `s${i}`, cwd: '/r', mode, start: `2026-09-${String(day).padStart(2, '0')}T10:00:00Z`, hit });
+  const sessions = [...Array(10)].map((_, i) => mk(i, 'dontAsk', i % 2 === 0, 10 + i)).concat([...Array(10)].map((_, i) => mk(20 + i, 'auto', false, 22 + i % 5)));
+  const wall = { list: sessions.filter((s) => s.hit).map((s) => ({ id: s.id })) };
+  const e = adoptionEffect(wall, { at: '2026-09-21T00:00:00Z', target: '/r/AGENTS.md' }, sessions);
+  assert.equal(e.mode, 'dontAsk'); assert.equal(e.modeAfter, 'auto'); assert.equal(e.confounded, true, 'the 2026-09-25 case: mode switch, not a win');
+});
+
+test('mcp: lists tools and answers trail_check', async () => {
+  const { spawn } = await import('node:child_process');
+  const p = spawn(process.execPath, [new URL('../bin/trail.mjs', import.meta.url).pathname, 'mcp'], { env: process.env });
+  const lines = []; p.stdout.on('data', (d) => lines.push(...String(d).split('\n').filter(Boolean)));
+  p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
+  p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'trail_check', arguments: { tool: 'WebFetch' } } }) + '\n');
+  p.stdin.end(); await new Promise((r) => p.on('close', r));
+  const res = lines.map((l) => JSON.parse(l));
+  assert.ok(res[0].result.tools.some((t) => t.name === 'trail_check'));
+  assert.equal(JSON.parse(res[1].result.content[0].text).wall, 'denied-web');
+});

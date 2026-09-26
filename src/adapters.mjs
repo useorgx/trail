@@ -13,12 +13,14 @@ async function* lines(file) {
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
   for await (const l of rl) yield l;
 }
+/** The permission mode a session mostly ran in (the one that decides which walls can happen). */
+const topMode = (m) => Object.entries(m).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 const safeJSON = (l) => { try { return JSON.parse(l); } catch { return null; } };
 const SHIP = /\bgit (commit|push)|gh pr (create|merge)/;
 const HOOKISH = /^\s*(Stop hook|<ci-monitor|Auto-fix|\[SYSTEM NOTIFICATION)/i;
 
 export async function readClaude(file) {
-  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null;
+  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
   for await (const l of lines(file)) {
     if (l.length < 20) continue;
     if (l.length > 60000 && l.includes('"tool_result"')) {
@@ -29,6 +31,7 @@ export async function readClaude(file) {
     const d = safeJSON(l); if (!d || d.isSidechain) continue;
     const ts = d.timestamp; if (ts) { start ??= ts; end = ts; }
     cwd ??= d.cwd; model ??= d.message?.model;
+    if (d.permissionMode) modes[d.permissionMode] = (modes[d.permissionMode] || 0) + 1;
     let c = d.message?.content; if (typeof c === 'string') c = [{ type: 'text', text: c }];
     if (!Array.isArray(c)) continue;
     for (const b of c) {
@@ -51,15 +54,21 @@ export async function readClaude(file) {
       }
     }
   }
-  return { client: 'claude', start, end, cwd, model, ev };
+  return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev };
 }
 
 export async function readCodex(file) {
-  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null;
+  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
   for await (const l of lines(file)) {
     const head = l.slice(0, 220);
     if (/"type":"(token_count|world_state|token_usage_record|turn_context|inter_agent)/.test(head) || /"type":"reasoning"/.test(l.slice(0, 400))) continue;
-    if (/"thread_settings_applied"/.test(head)) { model ??= l.match(/"model":"([^"]+)"/)?.[1]; continue; }
+    if (/"thread_settings_applied"/.test(head)) {
+      model ??= l.match(/"model":"([^"]+)"/)?.[1];
+      // Codex approval policy → the closest Claude Code permission mode, so walls compare like with like.
+      const ap = l.match(/"approval_policy":"([^"]+)"/)?.[1];
+      if (ap) { const m = { never: 'bypassPermissions', 'on-request': 'default', untrusted: 'default', 'on-failure': 'auto' }[ap] || ap; modes[m] = (modes[m] || 0) + 1; }
+      continue;
+    }
     if (l.length > 80000 && /_call_output"/.test(l.slice(0, 400))) {
       const id = l.match(/"call_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id);
       if (e) { const tail = l.slice(0, 3000); if (/Script failed|exited with code [1-9]|Exit code:? [1-9]/.test(tail)) { e.err = true; const at = tail.indexOf('output'); e.errText = tail.slice(at, at + 400); } }
@@ -96,5 +105,5 @@ export async function readCodex(file) {
       }
     }
   }
-  return { client: 'codex', start, end, cwd, model, ev };
+  return { client: 'codex', start, end, cwd, model, mode: topMode(modes), ev };
 }

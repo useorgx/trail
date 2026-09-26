@@ -5,6 +5,7 @@ import { loadSessions, loadAdoptions, loadLabels, appendLabel } from '../store.m
 import { corpus, threadMetrics } from '../metrics.mjs';
 import { adopt, ruleFor, targetsFor } from '../adopt.mjs';
 import { modelInfo } from '../model.mjs';
+import { actionFor, effectText, copy } from '../actions.mjs';
 
 const TABS = ['Overview', 'Walls', 'Threads', 'Sessions', 'Quality'];
 
@@ -81,14 +82,14 @@ export async function explore(opts = {}) {
         sub.push(`${C.dim}first ${shortDate(w.first)} · last ${shortDate(w.last)} · ${cl} · ${pj}${C.r}`);
         for (const x of w.samples.slice(0, 2)) sub.push(`${C.dim}what happens:${C.r} ${C.mid}${x.slice(0, w0 - 30)}${C.r}`);
         sub.push(`${C.lime}fix:${C.r} ${C.ink}${ruleFor(w).slice(0, w0 - 16)}${C.r}`);
-        if (w.adopted) sub.push(`${C.teal}since adopting:${C.r} ${C.ink}${w.adopted.after}${C.mid} sessions hit it (${w.adopted.afterPerDay.toFixed(2)}/day, was ${w.adopted.beforePerDay.toFixed(2)}/day) → ${w.adopted.target}${C.r}`);
-        else sub.push(`${C.dim}press ${C.lime}a${C.dim} to write this fix where your agents read it${C.r}`);
+        if (w.adopted) { const e = effectText(w.adopted); sub.push(`${C.teal}adopted${C.r} ${C.dim}→ ${w.adopted.target}${C.r}  ${C[e.tone]}${e.text}${C.r}`); }
+        else sub.push(`${C.lime}a${C.dim} adopt here · ${C.lime}c${C.dim} copy a prompt for your agent · ${C.lime}r${C.dim} copy the rule · ${C.lime}x${C.dim} copy the command${C.r}`);
         sub.push(`${C.dim}sessions: ${w.list.slice(-6).reverse().map((x) => `${shortDate(x.start)} ${x.project}`).join(' · ')}${C.r}`);
         for (const x of sub) rows.push({ i, line: '             ' + x, sel: false });
       }
     });
     const body = scroll(rows, 1);
-    return { L: [...L, ...body], hint: '↑/↓ move · enter expand · a adopt fix · / search · esc back' };
+    return { L: [...L, ...body], hint: '↑/↓ move · enter expand · a adopt · c copy agent prompt · r rule · x command · / search' };
   }
 
   function threadRow(t, sel, w) {
@@ -223,6 +224,7 @@ export async function explore(opts = {}) {
     else if (/^[1-5]$/.test(k) && !S.detail && !S.modal) S.tab = +k - 1;
     else if (k === '\r') enter(); else if (k === '\x1b' || k === '\x7f') back();
     else if (k === '/' && !S.detail) { S.typing = true; }
+    else if ((k === 'c' || k === 'r' || k === 'x') && S.tab === 1 && !S.detail && !S.modal) { const w = filteredWalls()[S.sel[1]]; if (w) { const act = actionFor(w); const what = { c: ['prompt', act.prompt], r: ['rule', act.rule], x: ['command', act.command] }[k]; S.toast = copy(what[1]) ? `Copied the ${what[0]} for “${w.name}”` : 'Could not reach the clipboard'; } }
     else if (k === 'a' && S.tab === 1 && !S.detail) { const w = filteredWalls()[S.sel[1]]; if (w) S.modal = { wall: w, targets: targetsFor(w), sel: 0 }; }
     else if (k === 'o' && S.tab === 2 && !S.detail) { S.filter.origin = origins[(origins.indexOf(S.filter.origin) + 1) % origins.length]; S.sel[2] = 0; S.top[2] = 0; }
     else if (k === 's' && S.tab === 2 && !S.detail) { S.filter.status = statuses[(statuses.indexOf(S.filter.status) + 1) % statuses.length]; S.sel[2] = 0; S.top[2] = 0; }

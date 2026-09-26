@@ -46,19 +46,40 @@ export function corpus(sessions, adoptions = []) {
       const a = walls.get(x.sig) || { sig: x.sig, named: x.named, name: x.named ? wallById(x.sig)?.name : x.sig, tool: x.tool, sessions: 0, calls: 0, first: s.start, last: s.start, weeks: {}, clients: {}, projects: {}, samples: [], list: [] };
       a.sessions++; a.calls += x.n; a.last = s.start; a.weeks[wk] = (a.weeks[wk] || 0) + 1; a.clients[s.client] = (a.clients[s.client] || 0) + 1; a.projects[s.project] = (a.projects[s.project] || 0) + 1;
       if (a.samples.length < 3 && !a.samples.includes(x.sample)) a.samples.push(x.sample);
-      a.list.push({ id: s.id, start: s.start, project: s.project, client: s.client, cwd: s.cwd, n: x.n });
+      a.list.push({ id: s.id, start: s.start, project: s.project, client: s.client, cwd: s.cwd, mode: s.mode, n: x.n });
       walls.set(x.sig, a); tot.wallCalls += x.n; w.wallCalls += x.n;
       if (seenWall.has(x.sig)) tot.rediscoveryCalls += x.n; else seenWall.add(x.sig);
     }
   }
-  // adoption effect: sessions hitting the wall before vs after adoption, per day
+  // Adoption effect, measured honestly: the share of sessions that hit the wall before vs after the fix, counting only
+  // sessions in the same scope (the repo for a repo rule) and the same permission mode. If the mode mix itself moved,
+  // the comparison is flagged as confounded instead of reported as a win (see: the 2026-09-25 routine mode switch).
   for (const ad of adoptions) {
     const a = walls.get(ad.sig); if (!a) continue;
-    const at = new Date(ad.at).getTime(); const before = a.list.filter((x) => new Date(x.start).getTime() < at); const after = a.list.filter((x) => new Date(x.start).getTime() >= at);
-    const days = (ms) => Math.max(1, ms / 864e5);
-    const firstT = before.length ? new Date(before[0].start).getTime() : at;
-    a.adopted = { at: ad.at, target: ad.target, beforePerDay: before.length / days(at - firstT), after: after.length, afterPerDay: after.length / days(Date.now() - at) };
+    a.adopted = adoptionEffect(a, ad, sessions);
   }
   const wallList = [...walls.values()].filter((a) => a.named || a.sessions >= 3).sort((a, b) => b.sessions - a.sessions);
   return { tot, weeks: [...W.values()].sort((a, b) => a.wk.localeCompare(b.wk)), walls: wallList, conf };
+}
+
+const HOME_RULE = /\/\.(claude|codex)\//;
+/** Before/after for one adopted fix. Exported for tests and for `trail share`. */
+export function adoptionEffect(wall, ad, sessions) {
+  const at = Date.parse(ad.at);
+  const repoScope = !HOME_RULE.test(ad.target || '') ? (ad.target || '').split('/').slice(0, -1).join('/') : null;
+  const inScope = sessions.filter((s) => (!repoScope || s.cwd === repoScope) && s.start);
+  const hitIds = new Set(wall.list.map((x) => x.id));
+  const mode = (arr) => { const c = {}; for (const s of arr) c[s.mode || 'unknown'] = (c[s.mode || 'unknown'] || 0) + 1; return Object.entries(c).sort((x, y) => y[1] - x[1])[0]?.[0] ?? 'unknown'; };
+  const before = inScope.filter((s) => Date.parse(s.start) < at); const after = inScope.filter((s) => Date.parse(s.start) >= at);
+  const modeBefore = mode(before.filter((s) => hitIds.has(s.id)).length ? before.filter((s) => hitIds.has(s.id)) : before);
+  const share = (arr, m) => { const xs = arr.filter((s) => (s.mode || 'unknown') === m); return { sessions: xs.length, hit: xs.filter((s) => hitIds.has(s.id)).length }; };
+  const b = share(before, modeBefore), f = share(after, modeBefore);
+  const modeAfter = mode(after);
+  const confounded = after.length > 0 && modeAfter !== modeBefore && f.sessions < after.length / 2;
+  const rate = (x) => (x.sessions ? x.hit / x.sessions : null);
+  return { at: ad.at, target: ad.target, mode: modeBefore, modeAfter, confounded,
+    before: b, after: f, beforeRate: rate(b), afterRate: rate(f),
+    // Old fields kept for the explorer and web view.
+    after_: f.hit, beforePerDay: b.hit / Math.max(1, (at - Math.min(at, ...before.map((s) => Date.parse(s.start)))) / 864e5), afterPerDay: f.hit / Math.max(1, (Date.now() - at) / 864e5),
+    enough: b.sessions >= 5 && f.sessions >= 5 };
 }
