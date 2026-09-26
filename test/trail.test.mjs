@@ -67,3 +67,18 @@ test('ledger server refuses requests without the launch token or with a foreign 
     assert.equal(evil, 403, 'DNS-rebinding style Host is refused even with the token');
   } finally { server.close(); }
 });
+
+test('sync outlines carry no text in metadata_only', async () => {
+  const { toSession } = await import('../src/sync.mjs');
+  const s = { id: 'abc', client: 'claude', project: 'my/repo', start: '2026-09-20T10:00:00Z', end: '2026-09-20T11:00:00Z', tools: 5, errs: 1, denied: 0, steers: { human: 1, cont: 0 },
+    walls: [{ sig: 'Bash: secret-ish error text', named: false, n: 2 }, { sig: 'denied-chain', named: true, n: 1 }],
+    threads: [{ id: 'T1', origin: 'ask', status: 'outcome', moves: 'pcs', backs: [], claim: ['PR #42', 'commit “fix the thing”'], t0: '2026-09-20T10:00:00Z', t1: '2026-09-20T10:30:00Z', title: 'Private title', p_abandon: 0.1 }] };
+  const meta = toSession(s, false);
+  assert.equal(meta.repo, 'my-repo', 'no path separators');
+  assert.equal(meta.threads[0].title, undefined, 'titles stay local');
+  assert.deepEqual(meta.threads[0].claims, ['PR #42'], 'commit messages stay local');
+  assert.match(meta.walls[0].sig, /^sig:[0-9a-f]{16}$/, 'unnamed error text is hashed');
+  assert.equal(meta.walls[1].sig, 'denied-chain');
+  assert.ok(!JSON.stringify(meta).includes('abc'), 'raw session id never sent');
+  assert.equal(toSession(s, true).threads[0].title, 'Private title', 'titles only with --with-titles');
+});
