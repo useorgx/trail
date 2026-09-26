@@ -4,6 +4,8 @@
 /** @typedef {{id:string,name:string,detect:(e:any)=>boolean,rule:string,kind:'agents'|'permissions'|'environment'}} Wall */
 /** @type {Wall[]} */
 export const WALLS = [
+  { id: 'codex-sandbox', kind: 'agents', name: 'Codex’s sandbox refuses writes outside the workspace', detect: (e) => e.denied && e.client === 'codex',
+    rule: 'Codex runs in a sandbox that refuses writes outside the workspace root (other worktrees’ .git refs, ~/.codex, /tmp paths it did not create). Work inside the workspace, or ask the person to add the path to writable roots, instead of retrying variants.' },
   { id: 'denied-home', kind: 'agents', name: 'Don’t-ask runs can’t read or write ~/.claude', detect: (e) => e.denied && /\.claude\//.test(e.target),
     rule: 'In scheduled / don’t-ask runs, files under ~/.claude are not readable or writable. Keep run state inside the repo (a gitignored file) or read your own earlier output instead.' },
   { id: 'denied-chain', kind: 'agents', name: 'Loops and chained shell commands get denied', detect: (e) => e.denied && e.tool === 'Bash' && /&&|\|\||;|\bfor\b|\bwhile\b/.test(e.target),
@@ -30,7 +32,7 @@ export const WALLS = [
 
 /** Normalize an error into a stable signature so identical failures group together. */
 export function signature(e) {
-  const line = String(e.errText || '').replace(/^[\s"{[]+/, '').replace(/\\n/g, '\n').split('\n').map((l) => l.trim()).find((l) => l.length > 8 && !/^(exit code:? \d+|(process )?exited with code \d+|script (failed|completed|error:?\s*$)|wall time|output:|chunk id|original token count|\(exited)/i.test(l)) || '';
+  const line = String(e.errText || '').replace(/^[\s"{[]+/, '').replace(/\\n/g, '\n').split('\n').map((l) => l.trim()).find((l) => l.length > 8 && !/^(exit code:? \d+|(process )?exited with code \d+|script (failed|completed|error:?\s*$)|wall time|output:|chunk id|original token count|\(exited|(npm |pnpm |yarn )?warn(ing)?\b|\(node:\d+\) \w*warning|deprecationwarning|total output lines|undefined$|null$)/i.test(l)) || '';
   const norm = line.toLowerCase()
     .replace(/(\/[\w.@~-]+)+/g, '<path>').replace(/\b[0-9a-f]{7,}\b/g, '<id>').replace(/\d+(\.\d+)?/g, 'n')
     .replace(/(["'`]).*?\1/g, '"…"').replace(/^(script failed|error|fatal)[:\s]+/, '').replace(/\s+/g, ' ').trim().slice(0, 90);

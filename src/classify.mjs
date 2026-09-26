@@ -5,7 +5,9 @@ import { WALLS, signature } from './walls.mjs';
 
 export const HARNESS = /^(Base directory for this skill|Approach this as|Skill \/|The previous response failed|<(command-|local-command|task-notification|system-reminder|environment_context|recommended_p|codex_internal|user_instructions|in-app-brows|permissions instructions)|Caveat:|\[Request interrupted|# AGENTS\.md)/;
 export const CONTINUE = /^\s*(continue|go on|keep going|go|proceed|yes|yep|ok(ay)?|do it|go ahead|try again|continue from where you left off\.?|resume)[.!]?\s*$/i;
-const SURPRISE_SAY = /\b(found (a|an|the|that)|discovered|turns out|unexpected(ly)?|root cause|the real (issue|problem|cause)|this is (a|an) (bug|incident|regression)|is broken|was broken|broke |regression|incident|leak(ing|ed)?|storm|wedged|stuck in)\b/i;
+// A discovery needs a problem, not just the word "found": "found the file" is reading; "found a leak" is a discovery.
+const PROBLEM = String.raw`(bug|issue|problem|leak|leaking|regression|incident|race|vulnerabilit\w*|security hole|mismatch|contradiction|inconsisten\w*|drift|outage|corrupt\w*|broken)`;
+export const SURPRISE_SAY = new RegExp(String.raw`\b(found|discovered|uncovered|spotted|noticed|caught)\b[^.!?\n]{0,60}\b${PROBLEM}\b|\broot cause\b|\bturns out\b[^.!?\n]{0,80}\b(broken|wrong|missing|never|not)\b|\b(is|was|are|were) (silently )?broken\b|\b(production|prod) (incident|regression|bug)\b|\bthis is a (real )?(bug|regression|incident|leak)\b`, 'i');
 const PLAN_SAY = /^(now|next|then|first|finally)[, ]+(let me|i('| wi)ll|i'm going to)\b|^let me now\b/i;
 const BACK_SAY = /\b(instead|fall ?back|falling back|switch(ing)? to|different approach|didn'?t work|doesn'?t work|revert(ing|ed)?|rolling back|abandon(ing)?|work ?around|route around)\b/i;
 const ABANDON_SAY = /\b(BLOCKED|blocked (by|on)|unable to|can(no|')t (access|read|run|write|proceed|reach|verify)|not (possible|available|accessible)|giving up|no way to|skipping (this|it))\b/i;

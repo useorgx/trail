@@ -89,7 +89,7 @@ export async function readCodex(file) {
       const cmds = [...src.matchAll(/cmd\\?"?\s*:\s*\\?"((?:[^"\\]|\\.)*)/g)].map((m) => m[1].replace(/\\n/g, ' ').replace(/\\"/g, '"'));
       const patch = [...src.matchAll(/\*\*\* (?:Update|Add|Delete) File: ([^\s\\]+)/g)].map((m) => m[1]);
       const e = patch.length ? { tool: 'apply_patch', target: patch[0] } : cmds.length ? { tool: 'Bash', target: cmds[0] } : { tool: p.name || 'tool', target: src.slice(0, 160) };
-      const ee = { k: 'tool', ts, rawTool: p.name, err: false, denied: false, errText: '', ...e, target: e.target.slice(0, 240) };
+      const ee = { k: 'tool', ts, client: 'codex', rawTool: p.name, err: false, denied: false, errText: '', ...e, target: e.target.slice(0, 240) };
       pend.set(p.call_id, ee); ev.push(ee);
     } else if (/_call_output$/.test(p.type || '')) {
       const e = pend.get(p.call_id); if (!e) continue;

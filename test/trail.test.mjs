@@ -124,3 +124,11 @@ test('experiments: bootstrap intervals are deterministic and honest about zero',
   assert.deepEqual(bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]), bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]), 'same data, same interval');
   assert.ok(bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]).lo > 0);
 });
+
+test('discovery needs a problem, not just the word "found"', async () => {
+  const { SURPRISE_SAY } = await import('../src/classify.mjs');
+  for (const t of ['Found a cross-tenant leak in the cache key.', 'Root cause: the replay guard raises 40001.', 'Turns out the cron never ran since Sep 5.', 'The hook is silently broken on Linux.', 'Discovered a regression in the pulse view.'])
+    assert.ok(SURPRISE_SAY.test(t), `should count: ${t}`);
+  for (const t of ['I found the file that defines the route.', 'Discovered the config lives in ~/.codex.', 'I found that the test passes now.', 'Found it — the handler is in routes.ts.'])
+    assert.ok(!SURPRISE_SAY.test(t), `should not count: ${t}`);
+});
