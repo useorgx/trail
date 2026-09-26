@@ -1,43 +1,47 @@
 # orgx trail
 
-See what your coding agents actually did. Trail reads your Claude Code and Codex history into
-**threads of work**, finds the **walls** your agents keep rediscovering, and writes the fix where they'll read it.
+See what your coding agents actually did, stop them relearning the same walls, and prove the fix worked.
+Reads your Claude Code and Codex history into **threads of work**, finds the **walls** they keep rediscovering,
+and writes the fix where they'll read it.
 
 ```bash
 npx @useorgx/trail
 ```
 
-- **Local.** Reads `~/.claude/projects` and `~/.codex/sessions` on your machine. Nothing is uploaded. No model is called.
-- **Fast.** 3,307 sessions (37.6 GB) in about 40 seconds on a laptop; after that, only new work is read (well under a second).
+- **Local.** Reads `~/.claude/projects` and `~/.codex/sessions` on your machine. Nothing is uploaded unless you run `trail sync`.
+- **Fast.** ~3,300 sessions (38 GB) in about 40 seconds; after that, only new work is read.
 - **Zero dependencies.** Small enough to read before you run it.
 
-## Commands
+## What you can do
 
 | | |
 |---|---|
-| `trail` | read new work, then open the explorer |
-| `trail explore` | tabs: Overview · Walls · Threads · Sessions · Quality |
-| `trail watch` | follow the session being written right now |
-| `trail open` | the ledger view in your browser, served from 127.0.0.1 only |
-| `trail summary` | the numbers as JSON |
-| `trail unadopt <id>` | remove a fix trail wrote into CLAUDE.md / AGENTS.md |
+| `trail` | read new work, then open the explorer (overview · walls · threads · sessions · quality) |
+| `trail walls` | the walls your agents keep hitting, each with a fix (`--json` for agents) |
+| `trail copy <id>` | copy a fix: a prompt your agent can act on (default), the rule, or the command |
+| `trail adopt <id>` | write the fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
+| `trail guard install` | prevention: in don't-ask runs, stop a known wall before the agent walks into it |
+| `trail card` | your trail as a shareable image and post text |
+| `trail share <id>` | a public page for a fix, measured across everyone who adopted it |
+| `trail experiments` | did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals) |
+| `trail bench` | would a model walk into your known walls, with and without your rules? |
+| `trail mcp` | trail as tools for your agents: `claude mcp add trail -- npx -y @useorgx/trail mcp` |
+| `trail open` · `trail watch` | ledger view in your browser (localhost) · follow the live session |
+| `trail sync` | send thread outlines (never transcripts) to OrgX; `--dry-run` shows exactly what would be sent |
 
-In the explorer: `←/→` tabs · `↑/↓` move · `enter` open · `/` search · `a` adopt a wall's fix · `t` label uncertain threads · `q` quit.
-
-## What the marks mean
-
-`○` asked · `◇` found along the way · `↺` recovered from repeated failures · `⊘` permission wall · `⏲` scheduled
-`·` probe · `━` change · `✓` check · `▲` ship · `✗` failed · `⊘` denied · `⟲` backtrack
+In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 
 ## How far to trust it
 
-Denials, failures and ships are read directly from the transcript. Intent, discoveries and whether a thread was
-dropped are inferred, and the Quality tab says how well. The "dropped" call comes from a small tree model
-(`src/model/abandon.json`) trained on model-labeled threads: F1 0.84 against those labels. Your own labels
-(`t` in the explorer) are the real test, and they stay in `~/.orgx/trail/labels.jsonl`.
+- **Facts** — denials, failures and ships — are read straight from the transcript.
+- **Judgments** — intent, discoveries, whether a thread was dropped — are inferred, and the Quality tab says how well.
+  "Dropped" comes from a small tree model (`src/model/abandon.json`); your own labels are the real test.
+- **Effects** are compared like with like: same repo, same client, same permission mode. When the permission mode
+  changed around a fix, trail says "confounded" instead of claiming a win.
+- `trail bench` measures a model's **planned** first calls, not executed runs, and says so.
 
 ## Data
 
-Everything trail learns lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.
+Everything lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.
 
 Built by [OrgX](https://useorgx.com).

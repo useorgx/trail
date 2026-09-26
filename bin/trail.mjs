@@ -18,6 +18,7 @@ import { actionFor, effectText, copy, wallId } from '../src/actions.mjs';
 import { sync } from '../src/sync.mjs';
 import { experiments, METRICS } from '../src/experiments.mjs';
 import { bench } from '../src/bench.mjs';
+import { shareFor } from '../src/share.mjs';
 import { writeCard, terminal as cardTerminal } from '../src/card.mjs';
 import { palette } from '../src/ui/term.mjs';
 import { guardStatus, installGuard, uninstallGuard, preventedCount } from '../src/guard.mjs';
@@ -44,6 +45,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
   trail experiments  did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals)
   trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
+  trail share <id>   a public page for a fix, measured across everyone who adopted it (--copy)
   trail card         your trail as a shareable image + post text   (--copy · --open)
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
   trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
@@ -101,6 +103,16 @@ else if (cmd === 'bench') {
   if (flag('json')) console.log(JSON.stringify(r, null, 1));
   else if (!r.tasks) console.log(r.note);
   else { console.log(`\n${r.tasks} tasks from your history · measured: ${r.measured} · $${r.cost.toFixed(2)}\n`); for (const x of r.table) console.log(`  ${x.model.padEnd(8)} ${x.cond.padEnd(18)} walks into a known wall on ${x.walked_in}/${x.tasks} tasks${x.unparsed ? ` (${x.unparsed} replies unparseable)` : ''}`); }
+}
+else if (cmd === 'share') {
+  const r = shareFor(argv[1], val('base'));
+  if (r.error) { console.error(r.error); process.exitCode = 1; }
+  else {
+    console.log(`\n  ${r.wall.name}\n  ${r.url}\n`);
+    if (!r.adopted) console.log(`  You haven't adopted this fix yet, so your page shows others' results only. Adopt it: trail adopt ${r.action.id}`);
+    else console.log(`  Your result: ${r.effect.text}\n  It reaches the page with your next \`trail sync\` (counts only).`);
+    if (flag('copy')) console.log(copy(r.text) ? '  Copied the post text.' : `\n${r.text}`); else console.log(`\n${r.text}\n\n  (--copy puts this on your clipboard)`);
+  }
 }
 else if (cmd === 'card') {
   const r = writeCard(val('out'));

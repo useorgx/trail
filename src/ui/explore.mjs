@@ -6,6 +6,7 @@ import { corpus, threadMetrics } from '../metrics.mjs';
 import { adopt, ruleFor, targetsFor } from '../adopt.mjs';
 import { modelInfo } from '../model.mjs';
 import { actionFor, effectText, copy } from '../actions.mjs';
+import { guardStatus } from '../guard.mjs';
 
 const TABS = ['Overview', 'Walls', 'Threads', 'Sessions', 'Quality'];
 
@@ -48,6 +49,8 @@ export async function explore(opts = {}) {
     L.push(`  ${C.b}The rediscovery tax${C.r}`);
     L.push(`  ${C.mid}Your agents spent ${C.coral}${fmt(T.rediscoveryCalls)}${C.mid} tool calls hitting walls an earlier session had already hit.${C.r}`);
     L.push(`  ${C.mid}That's ${C.coral}${pct(T.rediscoveryCalls / Math.max(T.tools, 1))}${C.mid} of all calls, spent relearning. Adopting a wall's fix writes it where your agents read it.${C.r}`);
+    const g = guardStatus();
+    L.push(g.installed ? `  ${C.teal}●${C.r} ${C.mid}guard on · trail stopped ${C.ink}${fmt(g.prevented)}${C.mid} rediscoveries before they happened${C.r}` : `  ${C.dim}○ guard off · ${C.lime}trail guard install${C.dim} stops known walls before they happen (don't-ask sessions only)${C.r}`);
     L.push('');
     L.push(`  ${C.dim}last ${wk.length} weeks · ${shortDate(wk[0]?.wk)} → now${C.r}`);
     const row = (label, xs, col, note) => L.push(`  ${pad(C.mid + label + C.r, 30)} ${spark(C, xs, col)}  ${C.dim}${note}${C.r}`);

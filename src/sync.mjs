@@ -8,6 +8,8 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { loadSessions, loadAdoptions, HOME, VERSION } from './store.mjs';
 import { modelInfo } from './model.mjs';
+import { corpus } from './metrics.mjs';
+import { wallById } from './walls.mjs';
 
 const SYNC_STATE = path.join(HOME, 'sync.json');
 const CHUNK = 200;
@@ -77,7 +79,14 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
   const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })();
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
   const todo = limit ? sessions.slice(-limit) : sessions;
-  const adoptions = loadAdoptions().map((a) => ({ sig: a.sig, adopted_at: iso(a.at), scope: /\/\.(claude|codex)\//.test(a.target) ? 'global' : 'repo', repo: /\/\.(claude|codex)\//.test(a.target) ? null : path.basename(path.dirname(a.target)).slice(0, 120) }));
+  // Each adopted fix travels with its measured effect (same scope, same mode; confounded ones say so). Counts only.
+  const allSessions = loadSessions(); const K = corpus(allSessions, loadAdoptions());
+  const adoptions = loadAdoptions().map((a) => {
+    const w = K.walls.find((x) => x.sig === a.sig); const e = w?.adopted;
+    const effect = e ? { mode: String(e.mode || 'unknown').slice(0, 40), before_sessions: e.before.sessions, before_hit: e.before.hit, after_sessions: e.after.sessions, after_hit: e.after.hit, confounded: !!e.confounded } : undefined;
+    const named = !!wallById(a.sig);
+    return { sig: named || bounded ? a.sig : `sig:${sha(a.sig).slice(0, 16)}`, adopted_at: iso(a.at), scope: /\/\.(claude|codex)\//.test(a.target) ? 'global' : 'repo', repo: /\/\.(claude|codex)\//.test(a.target) ? null : path.basename(path.dirname(a.target)).slice(0, 120), ...(effect ? { effect } : {}) };
+  });
   const mi = modelInfo();
   const envelope = (chunk, withAdoptions) => ({ schema_version: 'orgx-trail-threads/v1', privacy: bounded ? 'bounded' : 'metadata_only',
     source: { tool: '@useorgx/trail', version: VERSION, classifier: { sha: VERSION, model: mi?.name ?? null } },

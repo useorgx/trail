@@ -1,6 +1,6 @@
 {
   "name": "@useorgx/trail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "See what your coding agents actually did. Reads Claude Code and Codex history into threads of work, walls, and lessons \u2014 on your machine, in seconds, with no model and no upload.",
   "type": "module",
   "bin": {
