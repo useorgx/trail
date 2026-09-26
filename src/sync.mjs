@@ -20,10 +20,14 @@ const STATUS = { outcome: 'done', abandoned: 'dropped', open: 'open', parked: 'p
 export function credential() {
   if (process.env.ORGX_API_KEY) return { key: process.env.ORGX_API_KEY.trim(), from: 'ORGX_API_KEY' };
   if (process.platform === 'darwin') {
+    const args = ['find-generic-password', '-s', '@useorgx/wizard', '-a', 'orgx-api-key'];
     try {
-      const key = execFileSync('security', ['find-generic-password', '-s', '@useorgx/wizard', '-a', 'orgx-api-key', '-w'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000 }).toString().trim();
+      const key = execFileSync('security', [...args, '-w'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000 }).toString().trim();
       if (key) return { key, from: 'keychain (@useorgx/wizard)' };
-    } catch {}
+    } catch {
+      // The entry can exist while macOS refuses to hand it to a different program until you allow it.
+      try { execFileSync('security', args, { stdio: 'ignore' }); return { key: null, from: 'keychain', blocked: true }; } catch {}
+    }
   }
   return null;
 }
@@ -76,6 +80,7 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
     return { dryRun: true, url, privacy: bounded ? 'bounded' : 'metadata_only', sessions: todo.length, requests: chunks.length, threads: todo.reduce((a, s) => a + s.threads.length, 0), adoptions: adoptions.length, example: first?.sessions[0] ?? null };
   }
   const cred = credential();
+  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
   if (!cred) throw new Error('No OrgX key found. Run `npx @useorgx/wizard` to sign in, or set ORGX_API_KEY.');
   let sent = 0, threads = 0; let workspace = null;
   for (let i = 0; i < chunks.length; i++) {
