@@ -16,6 +16,8 @@ import { corpus } from '../src/metrics.mjs';
 import { unadopt, adopt, targetsFor } from '../src/adopt.mjs';
 import { actionFor, effectText, copy, wallId } from '../src/actions.mjs';
 import { sync } from '../src/sync.mjs';
+import { writeCard, terminal as cardTerminal } from '../src/card.mjs';
+import { palette } from '../src/ui/term.mjs';
 import { guardStatus, installGuard, uninstallGuard, preventedCount } from '../src/guard.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +40,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
   trail copy <id>    copy a wall's fix: --as prompt (default) | rule | command
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
+  trail card         your trail as a shareable image + post text   (--copy · --open)
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
   trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
   trail sync         send thread outlines (never transcripts) to your OrgX workspace
@@ -71,6 +74,13 @@ else if (cmd === 'walls' || cmd === 'adopt' || cmd === 'copy') {
     else if (cmd === 'copy') { const as = val('as') || 'prompt'; const text = w.action[as] ?? w.action.prompt; console.log(copy(text) ? `Copied the ${as} for “${w.name}”.` : text); }
     else { const to = val('to') || targetsFor(w._w)[0]?.file; const r = adopt(w._w, to); console.log(`Wrote the fix for “${w.name}” into ${r.target}\nRemove it any time: trail unadopt ${r.id}`); }
   }
+}
+else if (cmd === 'card') {
+  const r = writeCard(val('out'));
+  console.log('\n' + cardTerminal(r.d, palette(opts.plain)) + '\n');
+  console.log(`  image  ${r.png || r.svgPath}\n  page   ${r.htmlPath}`);
+  if (flag('copy')) console.log(copy(r.text) ? '  Copied the post text.' : `\n${r.text}`); else console.log(`\n  ${r.text.split('\n')[0]}\n  (trail card --copy puts the post text on your clipboard)`);
+  if (flag('open') && process.platform === 'darwin') (await import('node:child_process')).execFile('open', [r.htmlPath]);
 }
 else if (cmd === 'guard') {
   const sub = argv[1] || 'status';
