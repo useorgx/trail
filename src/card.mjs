@@ -8,6 +8,7 @@ import { loadSessions, loadAdoptions, HOME } from './store.mjs';
 import { corpus, threadMetrics } from './metrics.mjs';
 import { actionFor, effectText } from './actions.mjs';
 import { preventedCount } from './guard.mjs';
+import { clientLabel } from './clients.mjs';
 
 const C = { bg: '#0B0C0E', ink: '#ECEDEE', mid: '#A7ACB3', dim: '#6C727A', line: '#1C1F24', lime: '#BFFF00', teal: '#2DD4BF', coral: '#FF7A66', iris: '#8B8CFF', amber: '#F5B700' };
 const MOVE = { p: C.dim, r: '#4A4F57', c: C.lime, h: C.teal, s: C.ink, d: C.iris, X: C.coral, D: C.coral };
@@ -49,7 +50,7 @@ export function svg(d) {
   // Signature art: your threads as rows of cells in their own column; every card is different because every trail is.
   const cell = 7, step = 9, x0 = 780, y0 = 92, cols = Math.floor((W - P - x0) / step); let art = '';
   d.rows.slice(-42).forEach((m, r) => { [...m.slice(-cols)].forEach((ch, i) => { art += `<rect x="${x0 + i * step}" y="${y0 + r * step}" width="${cell}" height="${cell}" rx="1.5" fill="${MOVE[ch] || C.dim}"/>`; }); });
-  const clients = d.clients.map((c) => (c === 'claude' ? 'Claude Code' : c === 'codex' ? 'Codex' : c)).join(' + ');
+  const clients = d.clients.map(clientLabel).join(' + ');
   const t = (x, y, s, size, fill, weight = 400, family = 'mono', extra = '') => `<text x="${x}" y="${y}" font-family="${family === 'mono' ? "ui-monospace, 'SF Mono', Menlo, monospace" : "system-ui, -apple-system, 'Segoe UI', sans-serif"}" font-size="${size}" font-weight="${weight}" fill="${fill}" ${extra}>${esc(s)}</text>`;
   const bottom = d.proof ? `fix that worked · ${d.proof.effect}` : d.prevented ? `trail stopped ${fmt(d.prevented)} rediscoveries before they happened` : d.wall ? `top wall · ${d.wall.name} · hit in ${fmt(d.wall.sessions)} sessions` : '';
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -92,7 +93,7 @@ export function terminal(d, P) {
 }
 
 export function shareText(d) {
-  return `My coding agents spent ${fmt(d.relearn)} tool calls relearning walls they'd already hit (${fmt(d.sessions)} ${d.clients.map((c) => (c === 'claude' ? 'Claude Code' : 'Codex')).join(' + ')} sessions).${d.wall ? ` The top one: "${d.wall.name}", in ${fmt(d.wall.sessions)} sessions.` : ''}\n\nFound in ~40s, locally: npx @useorgx/trail`;
+  return `My coding agents spent ${fmt(d.relearn)} tool calls relearning walls they'd already hit (${fmt(d.sessions)} ${d.clients.map(clientLabel).join(' + ')} sessions).${d.wall ? ` The top one: "${d.wall.name}", in ${fmt(d.wall.sessions)} sessions.` : ''}\n\nFound in ~40s, locally: npx @useorgx/trail`;
 }
 
 const CHROMES = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium', '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];

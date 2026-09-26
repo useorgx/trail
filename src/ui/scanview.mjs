@@ -34,7 +34,7 @@ export async function scanView(opts) {
     const nRecent = Math.max(3, Math.min(10, H - 20));
     L.push(`  ${C.dim}landing now${C.r}`);
     for (const s of recent.slice(-nRecent)) {
-      const lbl = `${(s.start || '').slice(5, 10)} ${s.client === 'codex' ? 'codex ' : 'claude'} ${String(s.project).slice(0, 14).padEnd(14)}`;
+      const lbl = `${(s.start || '').slice(5, 10)} ${String(s.client).slice(0, 6).padEnd(6)} ${String(s.project).slice(0, 14).padEnd(14)}`;
       let row = ''; for (const t of s.threads.slice(0, 6)) row += originMark(C, t) + braid(C, t.moves, Math.max(3, Math.floor((W - 34) / Math.min(6, s.threads.length)) - 2)) + ' ';
       L.push(`  ${C.dim}${lbl}${C.r} ${row}`);
     }

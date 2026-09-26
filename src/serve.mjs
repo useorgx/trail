@@ -18,7 +18,7 @@ export function ledgerData() {
   const projects = {}; const threads = [];
   for (const s of sessions) {
     projects[s.project] = (projects[s.project] || 0) + s.threads.length;
-    for (const t of s.threads) threads.push([s.id, t.id, s.client === 'codex' ? 1 : 0, s.project, Date.parse(t.t0 || s.start) || 0, Date.parse(t.t1 || s.end || s.start) || 0, t.status, t.origin === 'surprise' ? (t.kind || 'found') : t.origin, t.title, t.moves.slice(0, 160), t.backs.length, t.p_abandon ?? -1]);
+    for (const t of s.threads) threads.push([s.id, t.id, s.client, s.project, Date.parse(t.t0 || s.start) || 0, Date.parse(t.t1 || s.end || s.start) || 0, t.status, t.origin === 'surprise' ? (t.kind || 'found') : t.origin, t.title, t.moves.slice(0, 160), t.backs.length, t.p_abandon ?? -1]);
   }
   return { threads, projects, tot: K.tot, weeks: K.weeks, walls: K.walls.slice(0, 40).map((w) => ({ sig: w.sig, name: w.name, sessions: w.sessions, calls: w.calls, first: w.first, last: w.last, weeks: w.weeks, clients: w.clients, projects: w.projects, samples: w.samples, rule: ruleFor(w), adopted: w.adopted || null, effect: effectText(w.adopted), action: actionFor(w) })) };
 }

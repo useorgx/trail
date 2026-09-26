@@ -1,10 +1,14 @@
 {
   "name": "@useorgx/trail",
   "version": "0.2.0",
-  "description": "See what your coding agents actually did. Reads Claude Code and Codex history into threads of work, walls, and lessons \u2014 on your machine, in seconds, with no model and no upload.",
+  "description": "See what your coding agents actually did. Reads Claude Code, Codex, OpenCode and Cursor history into threads of work, walls, and lessons — on your machine, in seconds, with no model and no upload.",
   "type": "module",
   "bin": {
     "trail": "bin/trail.mjs"
+  },
+  "exports": {
+    "./sessions": "./src/clients.mjs",
+    "./package.json": "./package.json"
   },
   "files": [
     "bin",
@@ -25,6 +29,8 @@
   "keywords": [
     "claude-code",
     "codex",
+    "opencode",
+    "cursor",
     "agents",
     "observability",
     "cli"

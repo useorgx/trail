@@ -15,12 +15,13 @@ import { loadSessions, loadAdoptions, P } from '../src/store.mjs';
 import { corpus } from '../src/metrics.mjs';
 import { unadopt, adopt, targetsFor } from '../src/adopt.mjs';
 import { actionFor, effectText, copy, wallId } from '../src/actions.mjs';
-import { sync } from '../src/sync.mjs';
+import { sync, connect } from '../src/sync.mjs';
 import { experiments, METRICS } from '../src/experiments.mjs';
 import { bench } from '../src/bench.mjs';
 import { shareFor } from '../src/share.mjs';
 import { writeCard, terminal as cardTerminal } from '../src/card.mjs';
 import { palette } from '../src/ui/term.mjs';
+import { creditsText } from '../src/credits.mjs';
 import { guardStatus, installGuard, uninstallGuard, preventedCount } from '../src/guard.mjs';
 import { fileURLToPath } from 'node:url';
 
@@ -47,12 +48,14 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
   trail share <id>   a public page for a fix, measured across everyone who adopted it (--copy)
   trail card         your trail as a shareable image + post text   (--copy · --open)
+  trail credits      the people whose work trail is built on, and where each idea lives in trail
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
   trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
+  trail connect      sign in to OrgX through the OrgX wizard (the one sign-in every OrgX tool shares)
   trail sync         send thread outlines (never transcripts) to your OrgX workspace
                      --dry-run shows exactly what would be sent · --with-titles adds thread titles
 
-  --since 2026-09-01   --client claude|codex   --plain   --rebuild
+  --since 2026-09-01   --client claude|codex|opencode|cursor   --plain   --rebuild
   Data: ${P.sessions}`;
 
 if (flag('help') || cmd === 'help') console.log(HELP);
@@ -61,6 +64,12 @@ else if (cmd === 'explore') await explore();
 else if (cmd === 'watch') await watch(opts);
 else if (cmd === 'open') await serve({ port: +(val('port') || 4747) });
 else if (cmd === 'summary') { const K = corpus(loadSessions(), loadAdoptions()); console.log(JSON.stringify({ ...K.tot, walls: K.walls.slice(0, 20).map(({ list, ...w }) => w), weeks: K.weeks }, null, 1)); }
+else if (cmd === 'connect') {
+  try { const r = await connect({ base: val('base') });
+    console.log(r.already ? `Already connected: using the OrgX key from ${r.credential}.` : `Connected: the wizard stored your key (${r.credential}).`);
+    console.log('Nothing has been sent. `trail sync --dry-run` shows exactly what would go; `trail sync` sends it.'); }
+  catch (e) { console.error(e.message); process.exitCode = 1; }
+}
 else if (cmd === 'sync') {
   try { const r = await sync({ dryRun: flag('dry-run'), withTitles: flag('with-titles'), base: val('base'), limit: val('limit') ? +val('limit') : undefined });
     if (r.dryRun) { console.log(`Would send ${r.sessions} sessions (${r.threads} threads, ${r.adoptions} adopted fixes) in ${r.requests} request(s) to ${r.url}\nPrivacy: ${r.privacy}. Transcripts, prompts, file paths and commit messages stay on this machine.\n\nOne session exactly as it would be sent:`); console.log(JSON.stringify(r.example, null, 1)); }
@@ -114,6 +123,7 @@ else if (cmd === 'share') {
     if (flag('copy')) console.log(copy(r.text) ? '  Copied the post text.' : `\n${r.text}`); else console.log(`\n${r.text}\n\n  (--copy puts this on your clipboard)`);
   }
 }
+else if (cmd === 'credits') console.log('\n' + creditsText(palette(opts.plain)));
 else if (cmd === 'card') {
   const r = writeCard(val('out'));
   console.log('\n' + cardTerminal(r.d, palette(opts.plain)) + '\n');

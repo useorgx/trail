@@ -1,7 +1,7 @@
 // Follow the session being written right now: threads appear and grow as the agent works.
 import fs from 'node:fs';
 import { discover } from '../store.mjs';
-import { readClaude, readCodex } from '../adapters.mjs';
+import { readSession } from '../clients.mjs';
 import { threadify } from '../classify.mjs';
 import { palette, clip, braid, statusWord, originMark } from './term.mjs';
 
@@ -16,8 +16,8 @@ export async function watch(opts = {}) {
     if (busy) return; busy = true;
     try {
       const nf = pick(); if (nf && nf.file !== f.file) { f = nf; last = -1; }
-      const size = fs.statSync(f.file).size; if (size === last) return; last = size;
-      const s = f.client === 'codex' ? await readCodex(f.file) : await readClaude(f.file); const r = threadify(s);
+      const size = f.file.includes('#') ? (nf || f).mtimeMs : fs.statSync(f.file).size; if (size === last) return; last = size;
+      const s = await readSession(f.file, f.client); const r = threadify(s);
       const W = Math.min(out.columns || 100, 140); const H = out.rows || 40;
       const L = [`${C.b}${C.lime}■${C.r}${C.b} orgx trail · live${C.r}  ${C.mid}${f.client} · ${(s.cwd || '').split('/').pop()} · ${r.tools} calls · ${r.threads.length} threads · ${r.denied} denied${C.r}`, C.dim + '─'.repeat(W) + C.r, ''];
       for (const t of r.threads.slice(-(H - 6))) {

@@ -1,7 +1,8 @@
 // One worker = one transcript at a time: read → threads → model → compact session record.
 import { parentPort } from 'node:worker_threads';
 import path from 'node:path';
-import { readClaude, readCodex, setByteListener } from './adapters.mjs';
+import { setByteListener } from './adapters.mjs';
+import { readSession } from './clients.mjs';
 import { threadify } from './classify.mjs';
 import { decide } from './decide.mjs';
 
@@ -12,10 +13,10 @@ setByteListener((n) => { acc += n; if (acc > 8e6) { parentPort.postMessage({ pro
 parentPort.on('message', async ({ file, client }) => {
   acc = 0;
   try {
-    const s = client === 'codex' ? await readCodex(file) : await readClaude(file);
+    const s = await readSession(file, client);
     const r = threadify(s);
     const sess = {
-      id: path.basename(file).replace(/\.jsonl$/, '').slice(-36), client, file,
+      id: s.id || path.basename(file).replace(/\.jsonl$/, '').slice(-36), client, file,
       project: (s.cwd || '').split('/').filter(Boolean).slice(-1)[0] || '—', cwd: s.cwd, model: s.model, mode: s.mode,
       start: s.start, end: s.end, asks: s.ev.filter((e) => e.k === 'ask').length,
       tools: r.tools, errs: r.errs, denied: r.denied, compactions: r.compactions, steers: r.steers, walls: r.walls,

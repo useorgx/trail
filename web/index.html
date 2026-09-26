@@ -68,7 +68,7 @@ function init() {
   document.getElementById('kpis').innerHTML = k(pct(tot.outcome / tot.threads), 'reached an outcome', '--teal') + k(pct(tot.abandoned / tot.threads), 'dropped', '--coral') + k(pct(tot.verified / Math.max(tot.changed, 1)), 'checked after changing', '--lime') + k(fmt(tot.discovery), 'found along the way', '--iris') + k(fmt(tot.rediscoveryCalls), 'calls spent re-hitting known walls', '--coral');
   const top = Object.entries(D.projects).sort((a, b) => b[1] - a[1]); const keep = new Set(top.slice(0, 16).map((x) => x[0]));
   lanes = [...top.slice(0, 16).map((x) => x[0]), 'other'];
-  T = D.threads.filter((t) => t[4]).map((t) => ({ sid: t[0], id: t[1], codex: t[2], project: t[3], a: t[4], b: Math.max(t[5], t[4] + 60e3), status: t[6], origin: t[7], title: t[8], moves: t[9], backs: t[10], p: t[11], lane: keep.has(t[3]) ? lanes.indexOf(t[3]) : lanes.length - 1 }));
+  T = D.threads.filter((t) => t[4]).map((t) => ({ sid: t[0], id: t[1], client: t[2], project: t[3], a: t[4], b: Math.max(t[5], t[4] + 60e3), status: t[6], origin: t[7], title: t[8], moves: t[9], backs: t[10], p: t[11], lane: keep.has(t[3]) ? lanes.indexOf(t[3]) : lanes.length - 1 }));
   // pack each lane into sub-rows so threads never overlap
   const rows = lanes.map(() => []);
   for (const t of T.sort((x, y) => x.a - y.a)) { const r = rows[t.lane]; let k = r.findIndex((end) => end < t.a); if (k < 0) { k = r.length; r.push(0); } r[k] = t.b; t.sub = k; }
@@ -120,7 +120,7 @@ cv.addEventListener('mousemove', (ev) => {
   if (drag) { const r = cv.getBoundingClientRect(); const dt = ((ev.clientX - drag.x) / (r.width - LW - 10)) * (drag.v.t1 - drag.v.t0); view = { t0: drag.v.t0 - dt, t1: drag.v.t1 - dt }; draw(); return; }
   const t = hit(ev); if (!t) { tip.style.opacity = 0; return; }
   const r = cv.getBoundingClientRect();
-  tip.innerHTML = `<b>${esc(t.title)}</b><br><span class="meta">${esc(t.project)} · ${t.codex ? 'codex' : 'claude'} · ${day(t.a)} · ${t.status === 'abandoned' ? 'dropped' : t.status}${t.origin === 'found' ? ' · found along the way' : t.origin === 'wall' ? ' · permission wall' : t.origin === 'recovery' ? ' · recovery from failures' : ''}</span><br><span class="braid">${braidHTML(t.moves.slice(0, 60))}</span>`;
+  tip.innerHTML = `<b>${esc(t.title)}</b><br><span class="meta">${esc(t.project)} · ${esc(t.client)} · ${day(t.a)} · ${t.status === 'abandoned' ? 'dropped' : t.status}${t.origin === 'found' ? ' · found along the way' : t.origin === 'wall' ? ' · permission wall' : t.origin === 'recovery' ? ' · recovery from failures' : ''}</span><br><span class="braid">${braidHTML(t.moves.slice(0, 60))}</span>`;
   tip.style.opacity = 1; tip.style.left = Math.min(ev.clientX - r.left + 14, r.width - 330) + 'px'; tip.style.top = ev.clientY - r.top + 14 + 'px';
 });
 cv.addEventListener('mouseleave', () => (tip.style.opacity = 0));

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'trail-test-'));
 process.env.TRAIL_HOME = tmp;
+process.env.TRAIL_NO_KEYCHAIN = '1'; // tests never touch the real keychain
 const fx = (n) => new URL(`./fixtures/${n}`, import.meta.url).pathname;
 const { readClaude, readCodex } = await import('../src/adapters.mjs');
 const { threadify, FEATURE_NAMES } = await import('../src/classify.mjs');
@@ -131,4 +132,60 @@ test('discovery needs a problem, not just the word "found"', async () => {
     assert.ok(SURPRISE_SAY.test(t), `should count: ${t}`);
   for (const t of ['I found the file that defines the route.', 'Discovered the config lives in ~/.codex.', 'I found that the test passes now.', 'Found it — the handler is in routes.ts.'])
     assert.ok(!SURPRISE_SAY.test(t), `should not count: ${t}`);
+});
+
+test('opencode and cursor: SQLite sessions read into the same events, read-only', async (t) => {
+  let sqlite; try { sqlite = await import('node:sqlite'); } catch { return t.skip('node:sqlite needs Node 22.5+'); }
+  const dir = fs.mkdtempSync(path.join(tmp, 'sqlite-'));
+  process.env.XDG_DATA_HOME = dir; fs.mkdirSync(path.join(dir, 'opencode'));
+  const oc = new sqlite.DatabaseSync(path.join(dir, 'opencode', 'opencode.db'));
+  oc.exec(`CREATE TABLE session (id TEXT, directory TEXT, model TEXT, time_created INT, time_updated INT);
+    CREATE TABLE message (id TEXT, session_id TEXT, time_created INT, data TEXT);
+    CREATE TABLE part (id TEXT, message_id TEXT, time_created INT, data TEXT);
+    INSERT INTO session VALUES ('ses_1', '/work/app', '{"id":"deepseek-v4"}', 1000, 5000);
+    INSERT INTO message VALUES ('m1', 'ses_1', 1000, '{"role":"user"}'), ('m2', 'ses_1', 2000, '{"role":"assistant"}');`);
+  const part = oc.prepare('INSERT INTO part VALUES (?, ?, ?, ?)');
+  part.run('p1', 'm1', 1000, JSON.stringify({ type: 'text', text: 'fix the build' }));
+  part.run('p2', 'm2', 2000, JSON.stringify({ type: 'reasoning', text: 'private' }));
+  part.run('p3', 'm2', 2100, JSON.stringify({ type: 'tool', tool: 'bash', state: { status: 'error', input: { command: 'cat ~/.claude/settings.json' }, error: 'The user rejected permission to use this specific tool call.' } }));
+  part.run('p4', 'm2', 2200, JSON.stringify({ type: 'tool', tool: 'read', state: { status: 'completed', input: { filePath: '/work/app/package.json' } } }));
+  oc.close();
+  const { discoverOpenCode, readOpenCode, readCursor } = await import('../src/adapters-sqlite.mjs');
+  const [entry] = discoverOpenCode();
+  assert.equal(entry.client, 'opencode'); assert.match(entry.file, /#ses_1$/);
+  const s = await readOpenCode(entry.file);
+  assert.equal(s.cwd, '/work/app'); assert.equal(s.model, 'deepseek-v4');
+  assert.deepEqual(s.ev.map((e) => e.k), ['ask', 'tool', 'tool'], 'reasoning parts are never read into events');
+  const [bash, read] = s.ev.filter((e) => e.k === 'tool');
+  assert.equal(bash.tool, 'Bash'); assert.equal(bash.denied, true); assert.equal(read.target, '/work/app/package.json');
+
+  const chat = path.join(dir, 'cursor', 'ws', 'chat-1'); fs.mkdirSync(chat, { recursive: true });
+  fs.writeFileSync(path.join(chat, 'meta.json'), JSON.stringify({ createdAtMs: 1000, updatedAtMs: 9000, cwd: '/work/app' }));
+  const cu = new sqlite.DatabaseSync(path.join(chat, 'store.db'));
+  cu.exec('CREATE TABLE blobs (id TEXT, data BLOB); CREATE TABLE meta (key TEXT, value BLOB);');
+  const blob = cu.prepare('INSERT INTO blobs VALUES (?, ?)');
+  blob.run('b1', JSON.stringify({ role: 'user', content: '<user_info>OS</user_info>' }));
+  blob.run('b2', JSON.stringify({ role: 'user', content: [{ type: 'text', text: '<user_query>\nrun the tests\n</user_query>' }] }));
+  blob.run('b3', JSON.stringify({ role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'run_terminal_cmd', args: { command: 'npm test' } }] }));
+  blob.run('b4', JSON.stringify({ role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', result: { isError: true, error: 'Cannot find module vitest' } }] }));
+  cu.close();
+  const c = await readCursor(path.join(chat, 'store.db'));
+  assert.deepEqual(c.ev.filter((e) => e.k === 'ask').map((e) => e.text), ['run the tests'], 'only the person’s words, not injected context');
+  const call = c.ev.find((e) => e.k === 'tool');
+  assert.equal(call.tool, 'Bash'); assert.equal(call.target, 'npm test'); assert.equal(call.err, true);
+  assert.equal(c.cwd, '/work/app');
+});
+
+test('connect: uses an existing key without running the wizard, and hands sign-in to the wizard otherwise', async () => {
+  const { connect } = await import('../src/sync.mjs');
+  let ran = null;
+  process.env.ORGX_API_KEY = 'oxk_test_placeholder';
+  const a = await connect({ run: async (args) => { ran = args; return 0; } });
+  assert.equal(a.already, true); assert.equal(ran, null, 'no wizard run when a key already exists');
+  delete process.env.ORGX_API_KEY;
+  const home = process.env.HOME; process.env.HOME = tmp; // no keychain entry or OpenClaw config reachable here
+  try {
+    await assert.rejects(connect({ run: async (args) => { ran = args; return 1; } }), /did not complete/);
+    assert.deepEqual(ran.slice(1, 4), ['@useorgx/wizard@latest', 'auth', 'login']);
+  } finally { process.env.HOME = home; }
 });

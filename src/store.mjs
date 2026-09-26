@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { discoverOpenCode, discoverCursor } from './adapters-sqlite.mjs';
 
 export const VERSION = 'trail-0.9';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
@@ -41,5 +42,7 @@ export function discover({ since, client } = {}) {
   };
   if (!client || client === 'claude') walk(path.join(H, '.claude', 'projects'), (n) => n.endsWith('.jsonl'), 'claude');
   if (!client || client === 'codex') walk(path.join(H, '.codex', 'sessions'), (n) => n.startsWith('rollout-') && n.endsWith('.jsonl'), 'codex');
+  if (!client || client === 'opencode') out.push(...discoverOpenCode(since));
+  if (!client || client === 'cursor') out.push(...discoverCursor(since));
   return out;
 }

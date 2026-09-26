@@ -7,6 +7,7 @@ import { adopt, ruleFor, targetsFor } from '../adopt.mjs';
 import { modelInfo } from '../model.mjs';
 import { actionFor, effectText, copy } from '../actions.mjs';
 import { guardStatus } from '../guard.mjs';
+import { clientShort } from '../clients.mjs';
 
 const TABS = ['Overview', 'Walls', 'Threads', 'Sessions', 'Quality'];
 
@@ -96,7 +97,7 @@ export async function explore(opts = {}) {
   }
 
   function threadRow(t, sel, w) {
-    const date = shortDate(t.s.start).padEnd(7); const cli = t.s.client === 'codex' ? 'cx' : 'cc';
+    const date = shortDate(t.s.start).padEnd(7); const cli = clientShort(t.s.client);
     const conf = t.p_abandon != null && Math.abs(t.p_abandon - 0.5) < 0.2 ? C.amber + '?' + C.r : ' ';
     return `${sel ? C.lime + '›' : ' '}${C.r} ${C.dim}${date}${cli}${C.r} ${originMark(C, t)} ${braid(C, t.moves, 22)}${' '.repeat(Math.max(0, 22 - Math.min(22, t.moves.length || 1)))} ${pad(statusWord(C, t.status) + C.r, 8)}${conf} ${C.ink}${clip(t.title, w - 70)}${C.r} ${C.dim}${t.s.project}${C.r}`;
   }

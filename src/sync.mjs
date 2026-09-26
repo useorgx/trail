@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { loadSessions, loadAdoptions, HOME, VERSION } from './store.mjs';
 import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
@@ -14,7 +14,8 @@ import { wallById } from './walls.mjs';
 const SYNC_STATE = path.join(HOME, 'sync.json');
 const CHUNK = 200;
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
-const CLIENT = { claude: 'claude-code', codex: 'codex' };
+import { CLIENTS } from './clients.mjs';
+const CLIENT = Object.fromEntries(Object.entries(CLIENTS).map(([k, v]) => [k, v.contract]));
 const ORIGIN = (t) => (t.origin === 'surprise' ? ({ wall: 'wall', recovery: 'recovery' }[t.kind] || 'found') : ({ ask: 'asked', plan: 'plan', schedule: 'scheduled', agent: 'plan' }[t.origin] || 'asked'));
 const STATUS = { outcome: 'done', abandoned: 'dropped', open: 'open', parked: 'parked', 'outcome?': 'unclear' };
 
@@ -31,7 +32,7 @@ function openclawKey() {
 /** The key the OrgX wizard already uses, in the wizard's own order: env, keychain store, OpenClaw config. Never printed. */
 export function credential() {
   if (process.env.ORGX_API_KEY) return { key: process.env.ORGX_API_KEY.trim(), from: 'ORGX_API_KEY' };
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' && !process.env.TRAIL_NO_KEYCHAIN) {
     const args = ['find-generic-password', '-s', '@useorgx/wizard', '-a', 'orgx-api-key'];
     try {
       const key = execFileSync('security', [...args, '-w'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 8_000 }).toString().trim();
@@ -100,7 +101,7 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
   }
   const cred = credential();
   if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
-  if (!cred) throw new Error('No OrgX key found. Run `npx @useorgx/wizard` to sign in, or set ORGX_API_KEY.');
+  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
   let sent = 0, threads = 0; let workspace = null;
   for (let i = 0; i < chunks.length; i++) {
     const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
@@ -111,4 +112,22 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
     fs.writeFileSync(SYNC_STATE, JSON.stringify(state));
   }
   return { dryRun: false, url, credential: cred.from, sessions: sent, threads, workspace, privacy: bounded ? 'bounded' : 'metadata_only' };
+}
+
+/**
+ * `trail connect`: sign-in belongs to the OrgX wizard, so trail never handles a password or a key itself.
+ * It runs `@useorgx/wizard auth login` (browser pairing), then reads the key the wizard stored, the same way sync does.
+ */
+export async function connect({ base, run = spawnWizard } = {}) {
+  const have = credential();
+  if (have?.key) return { already: true, credential: have.from };
+  if (have?.blocked) throw new Error('You are already signed in: the wizard\'s key is in your macOS keychain, but macOS has not allowed trail to read it. Run `trail sync` and choose Allow when macOS asks, or set ORGX_API_KEY.');
+  console.log('Signing in with the OrgX wizard, the sign-in every OrgX tool shares. A browser window opens to pair this terminal.\n');
+  const code = await run(['-y', '@useorgx/wizard@latest', 'auth', 'login', ...(base ? ['--base-url', base] : [])]);
+  const got = credential();
+  if (!got?.key) throw new Error(code === 0 ? 'The wizard finished but no key was found. Try `npx @useorgx/wizard auth status`.' : `The wizard sign-in did not complete (exit ${code}). Nothing was sent.`);
+  return { already: false, credential: got.from };
+}
+function spawnWizard(args) {
+  return new Promise((resolve) => { const p = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', args, { stdio: 'inherit' }); p.on('close', resolve); p.on('error', () => resolve(127)); });
 }
