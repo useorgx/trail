@@ -19,7 +19,9 @@ const vote = (xs) => { const c = {}; for (const x of xs) c[x] = (c[x] || 0) + 1;
 
 function next() {
   const items = allBatchItems(); const { gold, repeats, all } = goldByKey();
-  const fresh = items.filter((i) => !gold.has(i.key));
+  // Most informative first: threads where the jury splits, then the rest. Unanimous items go fast with the prefill.
+  const split = (i) => { const j = jury(i); if (j.length < 2) return 0; return ['boundary', 'origin', 'status'].reduce((a, f) => a + (new Set(j.map((x) => x[f])).size - 1), 0); };
+  const fresh = items.filter((i) => !gold.has(i.key)).map((i) => [i, split(i)]).sort((a, b) => b[1] - a[1]).map(([i]) => i);
   const sinceRepeat = all.length - (all.map((g) => g.repeat).lastIndexOf(true) + 1);
   const repeatable = all.filter((g) => !g.repeat).slice(0, -15).filter((g) => !repeats.some((r) => r.key === g.key));
   let it = null, repeat = false;
