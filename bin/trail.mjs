@@ -16,6 +16,8 @@ import { corpus } from '../src/metrics.mjs';
 import { unadopt, adopt, targetsFor } from '../src/adopt.mjs';
 import { actionFor, effectText, copy, wallId } from '../src/actions.mjs';
 import { sync } from '../src/sync.mjs';
+import { experiments, METRICS } from '../src/experiments.mjs';
+import { bench } from '../src/bench.mjs';
 import { writeCard, terminal as cardTerminal } from '../src/card.mjs';
 import { palette } from '../src/ui/term.mjs';
 import { guardStatus, installGuard, uninstallGuard, preventedCount } from '../src/guard.mjs';
@@ -40,6 +42,8 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
   trail copy <id>    copy a wall's fix: --as prompt (default) | rule | command
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
+  trail experiments  did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals)
+  trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
   trail card         your trail as a shareable image + post text   (--copy · --open)
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
   trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
@@ -74,6 +78,29 @@ else if (cmd === 'walls' || cmd === 'adopt' || cmd === 'copy') {
     else if (cmd === 'copy') { const as = val('as') || 'prompt'; const text = w.action[as] ?? w.action.prompt; console.log(copy(text) ? `Copied the ${as} for “${w.name}”.` : text); }
     else { const to = val('to') || targetsFor(w._w)[0]?.file; const r = adopt(w._w, to); console.log(`Wrote the fix for “${w.name}” into ${r.target}\nRemove it any time: trail unadopt ${r.id}`); }
   }
+}
+else if (cmd === 'experiments') {
+  const rows = experiments();
+  if (flag('json')) console.log(JSON.stringify(rows, null, 1));
+  else if (!rows.length) console.log('No instruction-file edits found in repos with enough sessions yet.');
+  else { console.log('Each row compares the same client and permission mode in the 3 weeks before and after. These are associations, not proof of cause: anything else that changed in that window counts too.');
+  for (const r of rows.filter((x) => flag('all') || x.n_before + x.n_after > 0).slice(0, +(val('limit') || 12))) {
+    console.log(`\n${r.at.slice(0, 10)}  ${r.repo}  ${r.kind}: ${r.what}  (${r.ref})`);
+    if (r.n_before < 5 || r.n_after < 5) { console.log(`  not enough comparable sessions yet (${r.n_before} before / ${r.n_after} after as ${r.mode}, needs 5 each)`); continue; }
+    console.log(`  compared as ${r.mode}: ${r.n_before} sessions before, ${r.n_after} after`);
+    if (r.confounded) console.log(`  ⚠ confounded: most sessions after this ran in a different permission mode than before`);
+    for (const [k, m] of Object.entries(r.metrics)) { const f = (x) => (k === 'backtracks' ? x.toFixed(2) : `${(x * 100).toFixed(1)}%`); const d = (x) => (k === 'backtracks' ? (x >= 0 ? '+' : '') + x.toFixed(2) : (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + 'pt');
+      console.log(`  ${METRICS[k].label.padEnd(40)} ${f(m.before)} → ${f(m.after)}   ${d(m.diff)} [${d(m.lo)}, ${d(m.hi)}]  ${m.detectable ? (m.improved ? '✓ better' : '✗ worse') : 'no detectable change'}`); }
+  } }
+}
+else if (cmd === 'bench') {
+  const models = (val('models') || 'haiku,sonnet').split(',');
+  process.stderr.write(`Asking ${models.join(', ')} how they'd start tasks that hit walls in your history (plans only, nothing runs)…\n`);
+  const r = await bench({ models, limit: +(val('limit') || 10), onProgress: (d, n) => process.stderr.write(`\r  ${d}/${n}`) });
+  process.stderr.write('\n');
+  if (flag('json')) console.log(JSON.stringify(r, null, 1));
+  else if (!r.tasks) console.log(r.note);
+  else { console.log(`\n${r.tasks} tasks from your history · measured: ${r.measured} · $${r.cost.toFixed(2)}\n`); for (const x of r.table) console.log(`  ${x.model.padEnd(8)} ${x.cond.padEnd(18)} walks into a known wall on ${x.walked_in}/${x.tasks} tasks${x.unparsed ? ` (${x.unparsed} replies unparseable)` : ''}`); }
 }
 else if (cmd === 'card') {
   const r = writeCard(val('out'));

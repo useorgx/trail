@@ -116,3 +116,11 @@ test('mcp: lists tools and answers trail_check', async () => {
   assert.ok(res[0].result.tools.some((t) => t.name === 'trail_check'));
   assert.equal(JSON.parse(res[1].result.content[0].text).wall, 'denied-web');
 });
+
+test('experiments: bootstrap intervals are deterministic and honest about zero', async () => {
+  const { bootstrapDiff } = await import('../src/experiments.mjs');
+  const same = bootstrapDiff([0.4, 0.5, 0.45, 0.5, 0.42], [0.41, 0.48, 0.47, 0.5, 0.44]);
+  assert.ok(same.lo < 0 && same.hi > 0, 'no real change → interval spans zero');
+  assert.deepEqual(bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]), bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]), 'same data, same interval');
+  assert.ok(bootstrapDiff([1, 2, 3, 4, 5], [6, 7, 8, 9, 10]).lo > 0);
+});
