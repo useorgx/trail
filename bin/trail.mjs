@@ -32,32 +32,33 @@ const flag = (k) => argv.includes('--' + k);
 const val = (k) => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
 const opts = { since: val('since') ? new Date(val('since')) : undefined, client: val('client'), rebuild: flag('rebuild'), plain: flag('plain') };
 
-const HELP = `orgx trail — read your Claude Code and Codex history into threads of work. Local, no model, no upload.
+const HELP = `orgx trail — see what your coding agents did and where they got stuck. Local, no model, no upload.
 
   trail              read new work, then open the explorer
   trail scan         read new work only (add --rebuild to reread everything)
   trail --demo       try it on a made-up history (reads nothing from your machine)
-  trail explore      open the explorer   (tabs: overview · walls · threads · sessions · quality)
+  trail explore      open the explorer
   trail watch        follow the session being written right now
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
-  trail deepen       opt-in: Jev reads steps and goals for surer outcomes · OrgX credits (after trail connect) or --key-file · quotes first
-  trail goals        each piece of work: its detours, how it ended, where it changed course   (--json)
-  trail walls        the walls your agents keep hitting, each with a fix   (--json for agents)
-  trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
-  trail copy <id>    copy a wall's fix: --as prompt (default) | rule | command
+  trail deepen       get surer outcomes: Jev reads each step and piece of work · opt-in · quote shown first
+                     pay with OrgX credits after trail connect, or use your own key with --key-file
+  trail goals        show each piece of work, its detours, its result, and each change of course   (--json)
+  trail walls        find a wall: a failure your agents keep hitting in separate sessions   (--json for agents)
+  trail adopt <id>   write a selected fix into AGENTS.md / CLAUDE.md        (--to <file>)
+  trail copy <id>    copy a selected fix: --as prompt (default) | rule | command
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
   trail experiments  did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals)
-  trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
+  trail bench        test whether a model would repeat known failures (--models haiku,sonnet · --limit 10)
   trail share <id>   a public page for a fix, measured across everyone who adopted it (--copy)
-  trail card         your trail as a shareable image + post text   (--copy · --open)
+  trail card         create a shareable summary image + post text   (--copy · --open)
   trail archive      keep transcripts after Claude Code deletes them (30 days by default)   (--client claude|codex|all)
   trail privacy      what trail keeps, where, who can read it, and what each command sends   (--pii on|off)
   trail credits      the people whose work trail is built on, and where each idea lives in trail
-  trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
-  trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
+  trail mcp          give your agents tools for reading trail data (claude mcp add trail -- npx -y @useorgx/trail mcp)
+  trail guard        stop known repeat failures before they happen   (install | uninstall | status)
   trail connect      sign in to OrgX through the OrgX wizard (the one sign-in every OrgX tool shares)
-  trail sync         send thread outlines (never transcripts) to your OrgX workspace
+  trail sync         send session outlines (never transcripts) to your OrgX workspace
                      --dry-run shows exactly what would be sent · --with-titles adds thread titles
 
   Colour-blind palette: TRAIL_PALETTE=cb

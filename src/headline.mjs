@@ -18,7 +18,7 @@ export function headline(sessions) {
   const wallSessions = new Map();
   for (const s of sessions) { if (!['dontAsk', 'bypassPermissions'].includes(s.mode) && s.client !== 'codex') continue; for (const w of s.walls || []) if (w.named && w.sig !== 'denied-other') wallSessions.set(w.sig, (wallSessions.get(w.sig) || 0) + 1); }
   const [topSig, topN] = [...wallSessions.entries()].sort((a, b) => b[1] - a[1])[0] || [];
-  if (topSig && topN >= 5 && unattended >= 0.2) return { kind: 'wall', n: topN, text: `Your agents hit “${wallById(topSig)?.name || topSig}” in ${topN} separate sessions, starting from zero each time.` };
+  if (topSig && topN >= 5 && unattended >= 0.2) return { kind: 'wall', n: topN, text: `Your agents hit the same failure, “${wallById(topSig)?.name || topSig}”, in ${topN} separate sessions. Each session started from zero.` };
   const goals = sessions.flatMap((s) => s.goals || []);
   // Only what the transcript shows: work that edited code files, then ended with no test/typecheck/lint/build after the edit.
   const changed = goals.filter((g) => g.checkedAfterChange != null && g.status === 'done');
@@ -26,7 +26,7 @@ export function headline(sessions) {
   if (changed.length >= 10 && unchecked.length / changed.length >= 0.3) return { kind: 'unchecked', n: unchecked.length, text: `In ${unchecked.length} of ${changed.length} finished pieces of work that changed code (${pct(unchecked.length, changed.length)}%), no test, typecheck, lint or build ran after the last code change.` };
   const backs = goals.reduce((a, g) => a + (g.backtracks?.length || 0), 0); const withBacks = goals.filter((g) => g.backtracks?.length).length;
   if (withBacks >= 10) return { kind: 'backtracks', n: backs, text: `Your agents changed course ${backs} times across ${withBacks} pieces of work; \`trail goals\` shows where and why.` };
-  if (topSig && topN >= 3) return { kind: 'wall', n: topN, text: `Your agents hit “${wallById(topSig)?.name || topSig}” in ${topN} separate sessions.` };
+  if (topSig && topN >= 3) return { kind: 'wall', n: topN, text: `Your agents hit the same failure, “${wallById(topSig)?.name || topSig}”, in ${topN} separate sessions.` };
   return null;
 }
 

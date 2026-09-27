@@ -28,10 +28,10 @@ export async function scanView(opts) {
     L.push(`  ${bar(C, f, 24)}  ${C.ink}${fmt(got / 1e6)}${C.mid} / ${fmt(st.bytes / 1e6)} MB · ${fmt(got / 1e6 / Math.max(0.1, (Date.now() - st.t0) / 1000))} MB/s · ${el}s${C.r}`);
     L.push('');
     L.push(`  ${C.ink}${C.b}${fmt(stats.sessions).padStart(6)}${C.r}${C.mid} sessions  ${C.dim}(claude ${fmt(stats.claude)} · codex ${fmt(stats.codex)})${C.r}`);
-    L.push(`  ${C.ink}${C.b}${fmt(stats.threads).padStart(6)}${C.r}${C.mid} threads of work${C.r}`);
-    L.push(`  ${C.iris}${C.b}${fmt(stats.discovery).padStart(6)}${C.r}${C.mid} times an agent said it found something wrong that nobody asked about${C.r}`);
+    L.push(`  ${C.ink}${C.b}${fmt(stats.threads).padStart(6)}${C.r}${C.mid} work sequences${C.r}`);
+    L.push(`  ${C.iris}${C.b}${fmt(stats.discovery).padStart(6)}${C.r}${C.mid} unrequested problems agents found${C.r}`);
     L.push(`  ${C.ink}${C.b}${fmt(stats.recovered).padStart(6)}${C.r}${C.mid} recoveries from repeated failures${C.r}`);
-    L.push(`  ${C.coral}${C.b}${fmt(stats.walled).padStart(6)}${C.r}${C.mid} times they hit a permission wall  ·  ${C.coral}${fmt(stats.backs)}${C.mid} backtracks${C.r}`);
+    L.push(`  ${C.coral}${C.b}${fmt(stats.walled).padStart(6)}${C.r}${C.mid} permission failures  ·  ${C.coral}${fmt(stats.backs)}${C.mid} changes of course${C.r}`);
     L.push('');
     const nRecent = Math.max(3, Math.min(10, H - 20));
     L.push(`  ${C.dim}landing now${C.r}`);
@@ -42,7 +42,7 @@ export async function scanView(opts) {
     }
     for (let k = Math.min(recent.length, nRecent); k < nRecent; k++) L.push('');
     L.push('');
-    L.push(`  ${C.dim}walls your agents keep rediscovering${C.r}`);
+    L.push(`  ${C.dim}failures repeated across separate sessions${C.r}`);
     const top = [...wallSessions.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4); const mx = top[0]?.[1] || 1;
     for (const [k, v] of top) L.push(`  ${C.coral}${String(v).padStart(5)}${C.r} ${bar(C, v / mx, 12, 'coral')}  ${C.ink}${wallById(k)?.name || k}${C.r}`);
     for (let k = top.length; k < 4; k++) L.push('');
@@ -55,14 +55,14 @@ export async function scanView(opts) {
   const res = await scan({ ...opts, onSession, onProgress: (s) => { st = s; } });
   if (timer) { clearInterval(timer); frame(); await new Promise((r) => setTimeout(r, 450)); }
   restore();
-  // Refresh the guard's evidence from everything read so far.
+  // Refresh prevention rules from everything read so far.
   try { buildGuard(corpus(loadSessions(), loadAdoptions()).walls.map((w) => ({ ...w, rule: ruleFor(w) }))); } catch {}
   const say = (s) => out.write(s + '\n');
   say('');
   say(`  ${C.b}${res.todo ? `Read ${fmt(res.todo)} sessions (${fmt(res.bytes / 1e6)} MB) in ${res.secs.toFixed(1)}s` : 'Up to date. Nothing new since the last read.'}${C.r}${C.mid} · $0.00 · nothing left this machine${C.r}`);
   const all = loadSessions(); const h = headline(all);
   const K2 = corpus(all, loadAdoptions());
-  if (K2.tot.pricedSessions) say(`  ${C.mid}Estimated spend at list prices: ${C.ink}$${fmt(Math.round(K2.tot.costUsd))}${C.mid} across ${fmt(K2.tot.pricedSessions)} sessions; ${C.coral}$${fmt(Math.round(K2.tot.detourUsd))}${C.mid} of it on recoveries and walls. (Your plan may bill differently.)${C.r}`);
+  if (K2.tot.pricedSessions) say(`  ${C.mid}Estimated spend at list prices: ${C.ink}$${fmt(Math.round(K2.tot.costUsd))}${C.mid} across ${fmt(K2.tot.pricedSessions)} sessions; ${C.coral}$${fmt(Math.round(K2.tot.detourUsd))}${C.mid} of it on recoveries and repeated failures. (Your plan may bill differently.)${C.r}`);
   if (h) say(`  ${C.ink}${h.text}${C.r}`);
   // Claude Code deletes transcripts after cleanupPeriodDays (default 30). Say so while it can still be changed.
   const soon = expiringSoon(all);

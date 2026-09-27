@@ -1,8 +1,7 @@
 # orgx trail
 
-See what your coding agents actually did, stop them relearning the same walls, and prove the fix worked.
-Reads your Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Factory Droid history into **threads of work**, finds the **walls** they keep rediscovering,
-and writes the fix where they'll read it.
+See what your coding agents actually did, stop them repeating the same failures, and prove the fix worked.
+Trail reads your Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Factory Droid history. It groups each sequence of work, finds failures repeated across separate sessions, and writes the fix where agents will read it.
 
 ```bash
 npx @useorgx/trail
@@ -16,38 +15,39 @@ npx @useorgx/trail
 
 | | |
 |---|---|
-| `trail` | read new work, then open the explorer (overview · walls · threads · sessions · quality) |
-| `trail goals` | each piece of work as one goal: its detours (recoveries, walls, discoveries), how it ended, where it changed course (`--json`) |
-| `trail deepen` | opt-in: Jev (TypeSafe's decision model) reads each step and each goal; an outcome both it and the steps agree on is marked verified. Pay with OrgX credits after `trail connect` (shows a quote from counts first; OrgX passes the text to Jev and keeps none of it) or with your own OpenRouter key (`--key-file`). Nothing is sent until you confirm. |
-| `trail walls` | the walls your agents keep hitting, each with a fix (`--json` for agents) |
-| `trail copy <id>` | copy a fix: a prompt your agent can act on (default), the rule, or the command |
-| `trail adopt <id>` | write the fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
-| `trail guard install` | prevention: in don't-ask runs, stop a known wall before the agent walks into it |
-| `trail card` | your trail as a shareable image and post text |
+| `trail` | read new work, then open the explorer |
+| `trail goals` | see each piece of work, its detours, how it ended, and where the agent changed course (`--json`) |
+| `trail deepen` | get more reliable outcomes. With your approval, Jev (TypeSafe's decision model) reads each step and piece of work. Trail marks an outcome verified when both reads agree. Pay with OrgX credits after `trail connect`, or use your own OpenRouter key with `--key-file`. Trail shows a quote first and sends nothing until you confirm. |
+| `trail walls` | find a wall: a failure your agents keep hitting in separate sessions. Each wall includes a fix (`--json` for agents). |
+| `trail copy <id>` | copy a selected fix as a prompt, rule, or command |
+| `trail adopt <id>` | write a selected fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
+| `trail guard install` | stop known repeat failures before they happen in don't-ask runs |
+| `trail card` | create a shareable summary image and post text |
 | `trail share <id>` | a public page for a fix, measured across everyone who adopted it |
 | `trail experiments` | did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals) |
-| `trail bench` | would a model walk into your known walls, with and without your rules? |
-| `trail mcp` | trail as tools for your agents: `claude mcp add trail -- npx -y @useorgx/trail mcp` |
-| `trail open` · `trail watch` | ledger view in your browser (localhost) · follow the live session |
+| `trail bench` | test whether a model would repeat known failures, with and without your rules |
+| `trail mcp` | give your agents tools for reading trail data: `claude mcp add trail -- npx -y @useorgx/trail mcp` |
+| `trail open` · `trail watch` | open the browser view on localhost · follow the live session |
 | `trail connect` | sign in to OrgX through [`@useorgx/wizard`](https://www.npmjs.com/package/@useorgx/wizard); trail never handles your password or key |
 | `trail credits` | the people whose work trail is built on |
-| `trail sync` | send thread outlines (never transcripts) to OrgX; `--dry-run` shows exactly what would be sent |
+| `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 
 ## How it works
 
-1. **Read** each session (Claude Code, Codex, OpenCode, Cursor) into events: asks, agent messages, tool calls.
-   Reasoning and full messages go to a side file (`~/.orgx/trail/language`).
-2. **Steps.** Every tool call gets facts (what it did, whether it passed, failed or was refused, read from its own
-   output). Every message and reasoning step gets one act: plan, hypothesis, evidence, decision, course change,
-   verification, claims done, hands back, blocked. Rules by default; Jev with `trail deepen`.
-3. **Threads** are the moves in order (`trail`'s explorer and walls use them).
-4. **Goals** stitch each ask's detours back in and read the outcome from the steps (shipped and checked, reported
-   change, answered, handed back, blocked, open), each pointing at the step that shows it.
+1. Trail reads each session into requests, agent messages, and tool calls. Reasoning and full messages go to a separate local file (`~/.orgx/trail/language`).
+2. Trail records what each tool call did and whether it passed, failed, or was refused. It labels each message or reasoning step as a plan, hypothesis, evidence, decision, change of course, verification, completion claim, handoff, or blocker. Rules do this by default; Jev does it when you run `trail deepen`.
+3. Trail groups the moves into a thread: one sequence of agent work. The explorer and repeated-failure checks use these sequences.
+4. `trail goals` joins each request to its detours. It reports how the piece of work ended and points to the step that proves the result.
 
-Against labels from Codex on 58 unseen threads, goals got the boundary right 89% of the time (threads alone: 38%)
-and the outcome 47% (threads: 10%). Those are model labels, not a person's; the lab (`lab/`) is where that gets fixed.
+Against Codex labels for 58 unseen work sequences, trail found the right piece-of-work boundary 89% of the time. The shorter sequences alone reached 38%. It found the right outcome 47% of the time, compared with 10% from the shorter sequences. These are model labels, not human labels; the lab (`lab/`) is where that gets fixed.
+
+## Verify this package
+
+After installing trail in a project, run `npm audit signatures` to verify registry signatures and provenance for installed packages. The [npm package page](https://www.npmjs.com/package/@useorgx/trail) also shows a provenance badge for releases with a verified attestation.
+
+Each release is built from a tagged commit by [`.github/workflows/publish.yml`](.github/workflows/publish.yml). The workflow requires a `vX.Y.Z` tag that matches `package.json`, runs the tests, and publishes through npm trusted publishing.
 
 ## How far to trust it
 
