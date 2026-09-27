@@ -36,6 +36,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
 
   trail              read new work, then open the explorer
   trail scan         read new work only (add --rebuild to reread everything)
+  trail --demo       try it on a made-up history (reads nothing from your machine)
   trail explore      open the explorer   (tabs: overview · walls · threads · sessions · quality)
   trail watch        follow the session being written right now
   trail open         open the ledger view in your browser (localhost only)
@@ -62,6 +63,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   Data: ${P.sessions}`;
 
 if (flag('help') || cmd === 'help') console.log(HELP);
+else if (flag('demo') || cmd === 'demo') { const { demo } = await import('../src/demo.mjs'); await demo(fileURLToPath(import.meta.url)); }
 else if (cmd === 'scan') await scanView(opts);
 else if (cmd === 'explore') await explore();
 else if (cmd === 'watch') await watch(opts);

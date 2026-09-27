@@ -193,6 +193,7 @@ export async function explore(opts = {}) {
   function listLen() { return [0, filteredWalls().length, filteredThreads().length, filteredSessions().length, 0][S.tab]; }
   function move(d) { if (S.modal) { S.modal.sel = (S.modal.sel + d + S.modal.targets.length) % S.modal.targets.length; return; } if (S.detail?.kind === 'session') { S.detail.sel = Math.max(0, Math.min(S.detail.s.threads.length - 1, S.detail.sel + d)); return; } const n = listLen(); S.sel[S.tab] = Math.max(0, Math.min(n - 1, S.sel[S.tab] + d)); }
   function enter() {
+    if (S.modal && process.env.TRAIL_DEMO) { S.modal = null; S.toast = 'Demo: nothing is written. On your own history this adds the fix to that file.'; return; }
     if (S.modal) { const t = S.modal.targets[S.modal.sel]; const r = adopt(S.modal.wall, t.file); adoptions = loadAdoptions(); K = corpus(sessions, adoptions); S.modal = null; S.toast = `Adopted → ${r.target}`; return; }
     if (S.detail?.kind === 'session') { const t = S.detail.s.threads[S.detail.sel]; S.detail = { kind: 'thread', t: { ...t, s: S.detail.s }, back: S.detail }; return; }
     if (S.tab === 0) { S.tab = 1; return; }
