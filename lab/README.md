@@ -25,6 +25,15 @@ sample → jury → you label → eval (dev) → error analysis → one change �
 6. **Test** `node lab/eval.mjs --split test --reason "why this counts"` only at milestones. Every access is logged
    in `test-access.jsonl`, and test results are aggregate-only.
 
+## Form v2
+
+Start the depth-only structural form with `node lab/serve.mjs --form v2 --as human`. Segmentation says whether the
+item starts, continues, splits, or is noise; outcome records what happened to the goal and the event that proves it;
+backtracks capture each replaced approach, its replacement, and trigger; lesson keeps a reusable rule and optional
+named wall; origin keeps or corrects the classifier prediction; title keeps or renames the predicted title; note holds
+optional judgment context. Click a numbered evidence line to attach it to the active event field, use Tab or Shift-Tab
+to move between event fields, and use the shown shortcuts for every choice.
+
 ## Rules that keep it honest
 
 - **Split by session, fixed forever.** `sha256(session id + salt)`; about 35% of sessions are test. All threads of a

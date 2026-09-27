@@ -99,8 +99,9 @@ export const appendJSONL = (p, o) => fs.appendFileSync(p, JSON.stringify(o) + '\
  * Gold means a person: labels written before the labeler field existed were made by Codex (2026-09-27) and are
  * marked `codex`. `labeler: 'any'` returns every label, for queueing the bench only.
  */
-export function goldByKey({ labeler = 'human' } = {}) {
-  const all = readJSONL(L.gold).filter((g) => labeler === 'any' || (g.labeler || 'codex') === labeler); const gold = new Map(); const repeats = [];
+export function goldByKey({ labeler = 'human', form = 'v1' } = {}) {
+  // Keep the two form generations as separate datasets even though they share one append-only file.
+  const all = readJSONL(L.gold).filter((g) => (form === 'v2' ? g.form === 'v2' : g.form !== 'v2') && (labeler === 'any' || (g.labeler || 'codex') === labeler)); const gold = new Map(); const repeats = [];
   for (const g of all) { if (g.repeat) repeats.push(g); else gold.set(g.key, g); }
   return { gold, repeats, all };
 }

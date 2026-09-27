@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>trail · labeling bench v2</title>
+<style>
+:root{--bg:#0B0C0E;--panel:#121417;--well:#0E1012;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.16);--ink:#ECEDEE;--mid:#A7ACB3;--dim:#6C727A;--lime:#BFFF00;--teal:#2DD4BF;--iris:#8B8CFF;--coral:#FF7A66;--amber:#F5B700;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif;height:100vh;display:grid;grid-template-rows:auto 1fr}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}.brand{font-weight:600;display:flex;gap:8px;align-items:center}.brand i{width:10px;height:10px;background:var(--lime);border-radius:2px}.meta{color:var(--mid)}.bar{flex:1;min-width:120px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--lime)}
+main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(410px,1fr);min-height:0}#ev{overflow:auto;padding:14px 16px;font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;border-right:1px solid var(--line)}
+#ev .ctx{color:var(--dim)}#ev .person{color:var(--lime)}#ev .agent{color:var(--ink)}#ev .tool{color:var(--mid)}#ev .bad{color:var(--coral)}#ev .reason{color:var(--iris);padding-left:1.5em}.evline{all:unset;display:block;width:100%;cursor:pointer;border-radius:4px}.evline:hover{background:rgba(45,212,191,.07)}.evline:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+aside{overflow:auto;padding:14px 16px 24px;display:grid;gap:16px;align-content:start}section{padding-top:14px;border-top:1px solid var(--line)}section:first-of-type{padding-top:0;border-top:0}h2{margin:0 0 7px;font:500 11px/1 ui-monospace,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.opts{display:flex;flex-wrap:wrap;gap:6px}.opt,.minor{all:unset;cursor:pointer;min-height:32px;padding:5px 9px;border:1px solid var(--line2);border-radius:6px;color:var(--mid)}.opt kbd,.minor kbd{font:11px ui-monospace,Menlo,monospace;color:var(--dim);margin-right:6px}.opt[aria-pressed=true]{background:var(--ink);color:var(--bg);border-color:var(--ink)}.opt[aria-pressed=true] kbd{color:#444}
+.opt:focus-visible,.minor:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,.event-target:focus-visible{outline:2px solid var(--teal);outline-offset:2px}input[type=text],textarea,select{width:100%;background:var(--panel);border:1px solid var(--line2);color:var(--ink);border-radius:6px;padding:8px 9px;font:inherit}select{min-height:38px}.hint{color:var(--dim);font-size:12px}.tag{font:500 11px ui-monospace,Menlo,monospace;padding:2px 6px;border-radius:4px;border:1px solid var(--line2);color:var(--mid)}.tag.rep{border-color:var(--amber);color:var(--amber)}
+.attach-note{position:sticky;top:-14px;z-index:2;margin:-14px -16px 0;padding:10px 16px;background:rgba(11,12,14,.96);border-bottom:1px solid var(--line);color:var(--dim)}.attach-note strong{color:var(--teal);font-weight:600}.event-target{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:space-between;width:100%;min-height:38px;margin-top:8px;padding:6px 9px;border:1px dashed var(--line2);border-radius:6px;color:var(--mid)}.event-target.active{border-style:solid;border-color:var(--teal);background:rgba(45,212,191,.06)}.refs{display:flex;gap:5px;flex-wrap:wrap}.ref{font:600 11px ui-monospace,Menlo,monospace;color:var(--teal)}
+.conditional{margin-top:9px}.backtrack{margin-top:9px;padding:10px;background:var(--well);border-left:2px solid var(--iris);border-radius:0 6px 6px 0}.backtrack-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.backtrack-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.backtrack .opts{margin-top:8px}.remove{color:var(--dim);padding:4px 7px}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.save{all:unset;cursor:pointer;background:var(--lime);color:#111;font-weight:650;padding:11px 14px;border-radius:7px;text-align:center;min-height:42px}.save[aria-disabled=true]{background:var(--panel);color:var(--amber);border:1px solid rgba(245,183,0,.4)}.save.saving{opacity:.65;pointer-events:none}.error{color:var(--coral)}[hidden]{display:none!important}
+@media (max-width:900px){body{height:auto;min-height:100vh}main{grid-template-columns:1fr}#ev{height:44vh;border-right:0;border-bottom:1px solid var(--line)}aside{overflow:visible}.opt,.minor,.event-target,.save{min-height:44px}}
+</style></head><body>
+<header><div class="brand"><i></i>labeling bench v2</div><div class="meta" id="where"></div><div class="bar"><i id="pbar" style="width:0"></i></div><div class="meta" id="prog"></div></header>
+<main><div id="ev">loading…</div><aside>
+  <div class="attach-note">Event clicks attach to <strong id="activeName">outcome event</strong>. <kbd>Tab</kbd>/<kbd>Shift-Tab</kbd> moves between event fields.</div>
+  <section><h2>Segmentation</h2><div class="opts" id="segmentation"></div><div id="splitBox" hidden><button class="event-target" data-attach="split" type="button"><span>Split events</span><span class="refs" id="splitRefs">click event lines</span></button></div></section>
+  <section><h2>Outcome · what happened to the goal?</h2><div class="opts" id="outcome"></div><button class="event-target" data-attach="outcome" type="button"><span>Outcome event</span><span class="refs" id="outcomeRef">click one event</span></button><div id="abandonBox" class="conditional" hidden><div class="hint">Why was it abandoned?</div><div class="opts" id="abandonedReason"></div></div></section>
+  <section><h2>Backtracks</h2><div class="opts"><button class="opt" id="noneBacktracks" data-action="none-backtracks" type="button"><kbd>0</kbd>none</button><button class="opt" data-action="add-backtrack" type="button"><kbd>+</kbd>add backtrack</button></div><div class="hint">A replaced approach or belief. A retry of the same thing is not a backtrack.</div><div id="backtrackList"></div></section>
+  <section><h2>Lesson · reusable?</h2><div class="opts" id="lessonReusable"></div><div id="lessonBox" class="conditional" hidden><input type="text" id="lessonText" maxlength="240" placeholder="one-line reusable lesson" aria-label="Reusable lesson"><div class="two" style="margin-top:8px"><select id="wall" aria-label="Related wall"><option value="">optional wall</option></select><button class="minor" id="focusWall" type="button"><kbd>l</kbd>choose wall</button></div></div></section>
+  <section><h2>Origin · classifier prefilled</h2><div class="opts" id="origin"></div></section>
+  <section><h2>Title</h2><div class="opts" id="titleAction"></div><div id="titleBox" class="conditional" hidden><input type="text" id="title" maxlength="120" placeholder="better title, at most 10 words" aria-label="Better title"></div></section>
+  <section><h2>Note <span class="hint">(optional)</span></h2><textarea id="note" rows="2" maxlength="500" aria-label="Note"></textarea></section>
+  <button class="save" id="save" aria-disabled="true">Missing required fields</button><div class="hint error" id="serverError" role="alert"></div>
+</aside></main>
+<script>
+const K = new URLSearchParams(location.search).get('k');
+const VALUES = {
+  segmentation: [['starts_here','1','starts here'],['merge_prev','2','continues the previous thread'],['merge_next','3','continues in the next thread'],['split_at','4','a new piece starts at event N'],['noise','5','not a piece of work']],
+  outcome: [['shipped_checked','⇧C','shipped checked'],['shipped_unchecked','⇧U','shipped unchecked'],['answered','⇧A','answered'],['handed_back','⇧H','handed back'],['continued_elsewhere','⇧E','continued elsewhere'],['abandoned','⇧X','abandoned'],['blocked_wall','⇧B','blocked wall'],['unclear','⇧Q','unclear']],
+  abandonedReason: [['gave_up','6','gave up'],['superseded','7','superseded'],['person_redirected','8','person redirected'],['out_of_scope','9','out of scope']],
+  lessonReusable: [['yes','y','yes'],['no','n','no']],
+  origin: [['asked','a','asked'],['plan','p','plan'],['found','f','found'],['recovery','r','recovery'],['wall','w','wall'],['scheduled','s','scheduled']],
+  titleAction: [['keep','t','keep'],['rename','t','rename']],
+  trigger: [['error','⌥E','error'],['evidence','⌥V','evidence'],['reasoning','⌥R','reasoning'],['person','⌥P','person']]
+};
+let cur = null, state = null, backtracksSet = false, active = { kind: 'outcome', index: null }, t0 = 0, saving = false;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const choiceHTML = (group, selected, index = '') => VALUES[group].map(([v,k,label]) => `<button class="opt" type="button" data-group="${group}" data-value="${v}" data-index="${index}" aria-pressed="${selected === v}"><kbd>${k}</kbd>${label}</button>`).join('');
+function renderChoices() {
+  for (const group of ['segmentation','outcome','abandonedReason','lessonReusable','origin','titleAction']) {
+    const value = group === 'segmentation' ? state.segmentation.value : group === 'outcome' ? state.outcome.value : group === 'abandonedReason' ? state.outcome.abandoned_reason : group === 'lessonReusable' ? (state.lesson.reusable == null ? null : state.lesson.reusable ? 'yes' : 'no') : group === 'origin' ? state.origin : state.title.action;
+    document.getElementById(group).innerHTML = choiceHTML(group, value);
+  }
+  document.getElementById('splitBox').hidden = state.segmentation.value !== 'split_at';
+  document.getElementById('splitRefs').innerHTML = state.segmentation.split_at.length ? state.segmentation.split_at.map((n) => `<span class="ref">#${n}</span>`).join('') : 'click event lines';
+  document.getElementById('outcomeRef').innerHTML = Number.isInteger(state.outcome.event) ? `<span class="ref">#${state.outcome.event}</span>` : 'click one event';
+  document.getElementById('abandonBox').hidden = state.outcome.value !== 'abandoned';
+  document.getElementById('lessonBox').hidden = state.lesson.reusable !== true;
+  document.getElementById('titleBox').hidden = state.title.action !== 'rename';
+  document.getElementById('noneBacktracks').setAttribute('aria-pressed', backtracksSet && state.backtracks.length === 0);
+  document.getElementById('backtrackList').innerHTML = state.backtracks.map((b,i) => `<div class="backtrack"><div class="backtrack-head"><span class="tag">backtrack ${i + 1}</span><button class="minor remove" type="button" data-action="remove-backtrack" data-index="${i}">remove</button></div><button class="event-target" type="button" data-attach="backtrack" data-index="${i}"><span>Change event</span><span class="refs">${Number.isInteger(b.event) ? `<span class="ref">#${b.event}</span>` : 'click one event'}</span></button><div class="backtrack-grid"><input type="text" maxlength="120" data-backtrack="from" data-index="${i}" value="${esc(b.from)}" placeholder="from: approach or belief dropped" aria-label="Backtrack ${i + 1} from"><input type="text" maxlength="120" data-backtrack="to" data-index="${i}" value="${esc(b.to)}" placeholder="to: what replaced it" aria-label="Backtrack ${i + 1} to"></div><div class="opts">${choiceHTML('trigger', b.trigger, i)}</div></div>`).join('');
+  restoreActive(); updateSave();
+}
+function eventTargets() { return [...document.querySelectorAll('.event-target')].filter((x) => !x.closest('[hidden]')); }
+function activate(el) {
+  if (!el) return; active = { kind: el.dataset.attach, index: el.dataset.index == null ? null : +el.dataset.index };
+  for (const x of document.querySelectorAll('.event-target')) x.classList.toggle('active', x === el);
+  document.getElementById('activeName').textContent = active.kind === 'split' ? 'split events' : active.kind === 'outcome' ? 'outcome event' : `backtrack ${active.index + 1} event`;
+}
+function restoreActive() {
+  const match = eventTargets().find((x) => x.dataset.attach === active.kind && (active.index == null ? x.dataset.index == null : +x.dataset.index === active.index));
+  activate(match || eventTargets()[0]);
+}
+function renderEvidence(t) {
+  return t.split('\n').map((l) => { const m = l.match(/^\[(\d+)\][ ~]/); const ctx = /^\[\d+\]~/.test(l); const cls = ctx ? 'ctx' : /^\[r\] REASONING/.test(l) ? 'reason' : /PERSON/.test(l.slice(0,30)) ? 'person' : /AGENT:/.test(l.slice(0,30)) ? 'agent' : /DENIED|FAILED/.test(l) ? 'bad' : 'tool'; return m ? `<button type="button" class="evline ${cls}" data-event="${m[1]}" title="Attach event ${m[1]}">${esc(l)}</button>` : `<div class="${cls}">${esc(l)}</div>`; }).join('');
+}
+function missing() {
+  const out = [];
+  if (!state.segmentation.value) out.push('segmentation'); else if (state.segmentation.value === 'split_at' && !state.segmentation.split_at.length) out.push('split event');
+  if (!state.outcome.value) out.push('outcome'); else {
+    if (!['unclear','continued_elsewhere'].includes(state.outcome.value) && !Number.isInteger(state.outcome.event)) out.push('outcome event');
+    if (state.outcome.value === 'abandoned' && !state.outcome.abandoned_reason) out.push('abandoned reason');
+  }
+  if (!backtracksSet) out.push('backtracks (or none)');
+  state.backtracks.forEach((b,i) => { if (!Number.isInteger(b.event) || !b.from.trim() || !b.to.trim() || !b.trigger) out.push(`backtrack ${i + 1}`); });
+  if (state.lesson.reusable == null) out.push('lesson yes/no'); else if (state.lesson.reusable && !state.lesson.text.trim()) out.push('lesson text');
+  if (!state.origin) out.push('origin');
+  if (!state.title.action || (state.title.action === 'rename' && !state.title.text.trim())) out.push('title');
+  return out;
+}
+function updateSave() {
+  const miss = missing(), b = document.getElementById('save'); b.setAttribute('aria-disabled', !!miss.length);
+  b.textContent = miss.length ? `Missing: ${miss.join(' · ')}` : 'Save label and next ⏎';
+}
+async function load() {
+  cur = await fetch('next?k=' + K).then((r) => r.json());
+  if (cur.done) { document.getElementById('ev').textContent = `All caught up. ${cur.labeled} v2 threads labeled.`; document.querySelector('aside').hidden = true; return; }
+  const p = cur.progress; document.getElementById('prog').textContent = `${p.labeled} v2 labeled · ${p.left} left · ${p.repeats} repeats`;
+  document.getElementById('pbar').style.width = (100 * p.labeled / Math.max(p.total,1)) + '%';
+  document.getElementById('where').innerHTML = `labeler <span class="tag">${esc(cur.labeler)}</span> · ${esc(cur.project)} · ${esc(cur.client)} · ${new Date(cur.start).toLocaleDateString()} ${cur.repeat ? '<span class="tag rep">blind</span>' : ''}`;
+  document.getElementById('ev').innerHTML = renderEvidence(cur.evidence); document.getElementById('ev').scrollTop = 0;
+  state = { segmentation:{ value:null, split_at:[] }, outcome:{ value:null, event:null, abandoned_reason:null }, backtracks:[], lesson:{ reusable:null, text:'', wall:null }, origin:cur.pred?.origin || null, title:{ action:'keep', text:cur.pred?.title || '' }, note:'' };
+  backtracksSet = false; active = { kind:'outcome', index:null }; document.getElementById('lessonText').value = ''; document.getElementById('title').value = state.title.text; document.getElementById('note').value = ''; document.getElementById('serverError').textContent = '';
+  document.getElementById('wall').innerHTML = '<option value="">optional wall</option>' + (cur.walls || []).map((w) => `<option value="${esc(w.id)}">${esc(w.id)} · ${esc(w.name)}</option>`).join('') + '<option value="new">new wall</option>';
+  renderChoices(); t0 = Date.now();
+}
+function attachEvent(n) {
+  if (active.kind === 'split') { if (!state.segmentation.split_at.includes(n)) state.segmentation.split_at.push(n); state.segmentation.split_at.sort((a,b) => a-b); }
+  else if (active.kind === 'outcome') state.outcome.event = n;
+  else if (active.kind === 'backtrack' && state.backtracks[active.index]) state.backtracks[active.index].event = n;
+  renderChoices();
+}
+document.addEventListener('click', (e) => {
+  const ev = e.target.closest('[data-event]'); if (ev) { attachEvent(+ev.dataset.event); return; }
+  const target = e.target.closest('.event-target'); if (target) { activate(target); return; }
+  const opt = e.target.closest('[data-group]'); if (opt) {
+    const g = opt.dataset.group, v = opt.dataset.value;
+    if (g === 'segmentation') { state.segmentation.value = v; if (v !== 'split_at') state.segmentation.split_at = []; }
+    else if (g === 'outcome') { state.outcome.value = v; if (v !== 'abandoned') state.outcome.abandoned_reason = null; }
+    else if (g === 'abandonedReason') state.outcome.abandoned_reason = v;
+    else if (g === 'lessonReusable') { state.lesson.reusable = v === 'yes'; if (v === 'no') { state.lesson.text=''; state.lesson.wall=null; document.getElementById('lessonText').value=''; document.getElementById('wall').value=''; } }
+    else if (g === 'origin') state.origin = v;
+    else if (g === 'titleAction') state.title.action = v;
+    else if (g === 'trigger' && state.backtracks[+opt.dataset.index]) state.backtracks[+opt.dataset.index].trigger = v;
+    renderChoices(); if (g === 'segmentation' && v === 'split_at') activate(document.querySelector('[data-attach=split]')); if (g === 'titleAction' && v === 'rename') document.getElementById('title').focus(); return;
+  }
+  const action = e.target.closest('[data-action]'); if (!action) return;
+  if (action.dataset.action === 'none-backtracks') { state.backtracks = []; backtracksSet = true; active = {kind:'outcome',index:null}; }
+  if (action.dataset.action === 'add-backtrack') { state.backtracks.push({event:null,from:'',to:'',trigger:null}); backtracksSet = true; active = {kind:'backtrack',index:state.backtracks.length - 1}; }
+  if (action.dataset.action === 'remove-backtrack') { state.backtracks.splice(+action.dataset.index,1); backtracksSet = true; active = {kind:'outcome',index:null}; }
+  renderChoices();
+});
+document.addEventListener('input', (e) => {
+  if (e.target.dataset.backtrack) state.backtracks[+e.target.dataset.index][e.target.dataset.backtrack] = e.target.value;
+  else if (e.target.id === 'lessonText') state.lesson.text = e.target.value;
+  else if (e.target.id === 'title') state.title.text = e.target.value;
+  else if (e.target.id === 'note') state.note = e.target.value;
+  updateSave();
+});
+document.getElementById('wall').addEventListener('change', (e) => { state.lesson.wall = e.target.value || null; updateSave(); });
+document.getElementById('focusWall').onclick = () => document.getElementById('wall').focus();
+async function save() {
+  const miss = missing(); if (miss.length || saving) { updateSave(); return; } saving = true; document.getElementById('save').classList.add('saving'); document.getElementById('serverError').textContent = '';
+  const body = { key:cur.key, segmentation:state.segmentation, outcome:state.outcome, backtracks:state.backtracks, lesson:state.lesson, origin:state.origin, title:state.title, note:state.note, seconds:(Date.now()-t0)/1000, repeat:!!cur.repeat, blind:!!cur.blind };
+  try { const r = await fetch('label?k=' + K,{method:'POST',body:JSON.stringify(body)}); if (!r.ok) throw new Error(await r.text()); await load(); }
+  catch (e) { document.getElementById('serverError').textContent = `Not saved: ${e.message}`; }
+  finally { saving = false; document.getElementById('save').classList.remove('saving'); updateSave(); }
+}
+document.getElementById('save').onclick = save;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.target.matches('select')) { e.preventDefault(); save(); return; }
+  if (e.key === 'Escape' && e.target.matches('input,textarea,select')) { e.target.blur(); return; }
+  if (e.target.matches('input,textarea,select')) return;
+  if (e.key === 'Tab') { const xs = eventTargets(); if (!xs.length) return; e.preventDefault(); const at = xs.findIndex((x) => x.classList.contains('active')); const next = (at + (e.shiftKey ? -1 : 1) + xs.length) % xs.length; activate(xs[next]); xs[next].focus(); return; }
+  const plain = !e.altKey && !e.metaKey && !e.ctrlKey;
+  if (plain && /^[1-5]$/.test(e.key)) { state.segmentation.value = VALUES.segmentation[+e.key-1][0]; if (state.segmentation.value !== 'split_at') state.segmentation.split_at=[]; renderChoices(); if (e.key === '4') activate(document.querySelector('[data-attach=split]')); return; }
+  if (plain && /^[6-9]$/.test(e.key) && state.outcome.value === 'abandoned') { state.outcome.abandoned_reason = VALUES.abandonedReason[+e.key-6][0]; renderChoices(); return; }
+  const shiftedOutcome = {C:'shipped_checked',U:'shipped_unchecked',A:'answered',H:'handed_back',E:'continued_elsewhere',X:'abandoned',B:'blocked_wall',Q:'unclear'};
+  if (plain && e.shiftKey && shiftedOutcome[e.key]) { state.outcome.value = shiftedOutcome[e.key]; if (state.outcome.value !== 'abandoned') state.outcome.abandoned_reason=null; renderChoices(); return; }
+  if (plain && !e.shiftKey && {a:1,p:1,f:1,r:1,w:1,s:1}[e.key]) { state.origin = ({a:'asked',p:'plan',f:'found',r:'recovery',w:'wall',s:'scheduled'})[e.key]; renderChoices(); return; }
+  if (plain && !e.shiftKey && (e.key === 'y' || e.key === 'n')) { state.lesson.reusable = e.key === 'y'; if (e.key === 'n') { state.lesson.text=''; state.lesson.wall=null; document.getElementById('lessonText').value=''; document.getElementById('wall').value=''; } renderChoices(); return; }
+  if (plain && e.key === '0') { state.backtracks=[]; backtracksSet=true; active={kind:'outcome',index:null}; renderChoices(); return; }
+  if (plain && (e.key === '+' || e.key === '=')) { state.backtracks.push({event:null,from:'',to:'',trigger:null}); backtracksSet=true; active={kind:'backtrack',index:state.backtracks.length-1}; renderChoices(); return; }
+  if (e.altKey && active.kind === 'backtrack' && state.backtracks[active.index]) { const v={e:'error',v:'evidence',r:'reasoning',p:'person'}[e.key.toLowerCase()]; if (v) { e.preventDefault(); state.backtracks[active.index].trigger=v; renderChoices(); return; } }
+  if (plain && !e.shiftKey && e.key === 't') { state.title.action = state.title.action === 'keep' ? 'rename' : 'keep'; renderChoices(); if (state.title.action === 'rename') document.getElementById('title').focus(); return; }
+  if (plain && !e.shiftKey && e.key === 'l' && state.lesson.reusable) { document.getElementById('wall').focus(); }
+});
+load();
+</script></body></html>
