@@ -17,6 +17,8 @@ npx @useorgx/trail
 | | |
 |---|---|
 | `trail` | read new work, then open the explorer (overview · walls · threads · sessions · quality) |
+| `trail goals` | each piece of work as one goal: its detours (recoveries, walls, discoveries), how it ended, where it changed course (`--json`) |
+| `trail deepen` | opt-in: Jev (TypeSafe, via OpenRouter) tags each step for sharper outcomes; needs your OpenRouter key and sends step text (~$0.00003 a step) |
 | `trail walls` | the walls your agents keep hitting, each with a fix (`--json` for agents) |
 | `trail copy <id>` | copy a fix: a prompt your agent can act on (default), the rule, or the command |
 | `trail adopt <id>` | write the fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
@@ -32,6 +34,20 @@ npx @useorgx/trail
 | `trail sync` | send thread outlines (never transcripts) to OrgX; `--dry-run` shows exactly what would be sent |
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
+
+## How it works
+
+1. **Read** each session (Claude Code, Codex, OpenCode, Cursor) into events: asks, agent messages, tool calls.
+   Reasoning and full messages go to a side file (`~/.orgx/trail/language`).
+2. **Steps.** Every tool call gets facts (what it did, whether it passed, failed or was refused, read from its own
+   output). Every message and reasoning step gets one act: plan, hypothesis, evidence, decision, course change,
+   verification, claims done, hands back, blocked. Rules by default; Jev with `trail deepen`.
+3. **Threads** are the moves in order (`trail`'s explorer and walls use them).
+4. **Goals** stitch each ask's detours back in and read the outcome from the steps (shipped and checked, reported
+   change, answered, handed back, blocked, open), each pointing at the step that shows it.
+
+Against labels from Codex on 58 unseen threads, goals got the boundary right 89% of the time (threads alone: 38%)
+and the outcome 47% (threads: 10%). Those are model labels, not a person's; the lab (`lab/`) is where that gets fixed.
 
 ## How far to trust it
 

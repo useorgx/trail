@@ -83,10 +83,13 @@ if (cmd === 'train') {
   const acc = (pred) => { const ok = te.filter((x) => pred(x) === silver.get(x.id)).length; const per = {}; for (const t of TAGS) { const g = te.filter((x) => silver.get(x.id) === t); const p = te.filter((x) => pred(x) === t); const tp = g.filter((x) => pred(x) === t).length; per[t] = { n: g.length, precision: p.length ? +(tp / p.length).toFixed(2) : null, recall: g.length ? +(tp / g.length).toFixed(2) : null }; } return { acc: +(ok / te.length).toFixed(3), per }; };
   const jev = new Map(readL(F.jev).map((x) => [x.id, x.tag]));
   const report = { train: tr.length, test: te.length, rules: acc((x) => x.rule), model: acc((x) => scoreTags(m, X(x))[0][0]), ...(jev.size ? { jev: acc((x) => jev.get(x.id) || 'other') } : {}) };
-  fs.mkdirSync(new URL('../../src/model/', import.meta.url), { recursive: true });
-  fs.writeFileSync(new URL('../../src/model/steptag.json', import.meta.url), JSON.stringify({ trained: new Date().toISOString(), silver: arg('model', 'sonnet'), n: tr.length, ...m }));
+  // The model ships (src/model/steptag.json, which steps.mjs loads automatically) only if it beats the rules overall
+  // AND on course changes, the tag backtracks are built from. Otherwise it stays in the lab for inspection.
+  const modelFile = path.join(DIR, 'steptag.json'); fs.writeFileSync(modelFile, JSON.stringify({ trained: new Date().toISOString(), silver: arg('model', 'sonnet'), n: tr.length, ...m }));
   fs.writeFileSync(path.join(DIR, 'report.json'), JSON.stringify(report, null, 1));
   console.log(JSON.stringify({ train: report.train, test: report.test, rules: report.rules.acc, model: report.model.acc, jev: report.jev?.acc }, null, 1));
   const cc = (k) => report[k]?.per?.course_change; console.log('course_change  rules', JSON.stringify(cc('rules')), ' model', JSON.stringify(cc('model')), report.jev ? ' jev ' + JSON.stringify(cc('jev')) : '');
-  console.log('model size', (fs.statSync(new URL('../../src/model/steptag.json', import.meta.url)).size / 1024).toFixed(0), 'KB');
+  const passes = report.model.acc > report.rules.acc && (report.model.per.course_change.recall ?? 0) >= (report.rules.per.course_change.recall ?? 0);
+  if (passes && process.argv.includes('--ship')) { fs.copyFileSync(modelFile, new URL('../../src/model/steptag.json', import.meta.url)); console.log('shipped to src/model/steptag.json'); }
+  else console.log(passes ? 'passes the gate; add --ship to install it' : 'does not pass the gate (must beat rules overall and on course_change); not installed', `· ${(fs.statSync(modelFile).size / 1024).toFixed(0)} KB in the lab`);
 }

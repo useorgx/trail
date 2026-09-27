@@ -40,6 +40,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail watch        follow the session being written right now
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
+  trail deepen       opt-in: Jev tags each step for sharper goals (needs an OpenRouter key; sends step text; ~$0.00003/step)
   trail goals        each piece of work: its detours, how it ended, where it changed course   (--json)
   trail walls        the walls your agents keep hitting, each with a fix   (--json for agents)
   trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
@@ -64,6 +65,13 @@ else if (cmd === 'scan') await scanView(opts);
 else if (cmd === 'explore') await explore();
 else if (cmd === 'watch') await watch(opts);
 else if (cmd === 'open') await serve({ port: +(val('port') || 4747) });
+else if (cmd === 'deepen') {
+  // Opt-in: Jev tags each language step (paid, sends step text to OpenRouter/TypeSafe), then goals are rebuilt.
+  const { deepen, readKey } = await import('../src/deepen.mjs');
+  const key = readKey(val('key-file')); if (!key) { console.error('trail deepen is opt-in and needs an OpenRouter key: set OPENROUTER_API_KEY or pass --key-file <env file>.'); process.exitCode = 2; }
+  else { const r = await deepen({ key, limit: val('limit') ? +val('limit') : undefined, onProgress: (p) => process.stderr.write(`  ${p.done}/${p.total} steps · $${p.cost.toFixed(4)}\r`) });
+    console.log(`Jev tagged ${r.steps} steps in ${r.sessions} sessions ($${r.cost.toFixed(4)}${r.failed ? `, ${r.failed} failed` : ''}). Rebuilding goals…`); await scanView({ ...opts, plain: true }); }
+}
 else if (cmd === 'goals') {
   // Goals: one per ask, detours inside, outcome read from the steps (src/goals.mjs).
   const C = palette(opts.plain); const lim = +(val('limit') || 15);

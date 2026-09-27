@@ -3,6 +3,9 @@
 // (the person, the agent's messages, its reasoning) get one act tag: rules for the clear cases, and a small local
 // model (src/model/steptag.json, trained in lab/steptag) when it exists. No network, microseconds per step.
 import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { HOME } from './store.mjs';
 
 // ---- tool steps: facts ------------------------------------------------------------------------------------
 const ACTIONS = [
@@ -73,9 +76,16 @@ export function scoreTags(m, f) {
   const mx = Math.max(...z); const e = z.map((v) => Math.exp(v - mx)); const sum = e.reduce((a, b) => a + b, 0);
   return m.tags.map((t, k) => [t, e[k] / sum]).sort((a, b) => b[1] - a[1]);
 }
+// Opt-in tier: tags `trail deepen` got from Jev, keyed by text hash (see src/deepen.mjs). Used when present.
+let JEV;
+function jevTag(text) {
+  if (JEV === undefined) { try { JEV = JSON.parse(fs.readFileSync(path.join(HOME, 'steptags-jev.json'), 'utf8')); } catch { JEV = null; } }
+  return JEV && JEV[crypto.createHash('sha1').update(String(text)).digest('hex').slice(0, 16)];
+}
 /** One act tag for a language step. kind: 'ask' (the person), 'say' (agent message) or 'think' (reasoning). */
 export function tagStep(text, kind) {
   if (kind === 'ask') return { tag: 'ask', conf: 1, by: 'rule' };
+  const j = jevTag(text); if (j) return { tag: j[0], conf: j[1], by: 'jev' };
   const m = model();
   if (m) { const [[tag, conf]] = scoreTags(m, featurize(text, kind)); return { tag, conf: +conf.toFixed(3), by: 'model' }; }
   const tag = rulesTag(text); return { tag, conf: tag === 'other' ? 0.5 : 0.7, by: 'rule' };
