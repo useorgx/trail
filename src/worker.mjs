@@ -17,6 +17,8 @@ parentPort.on('message', async ({ file, client }) => {
   acc = 0;
   try {
     const s = await readSession(file, client);
+    // Empty conversations (drafts, windows opened and closed) are not sessions.
+    if (!s.ev.length) { parentPort.postMessage({ ok: true, skip: true }); return; }
     const r = threadify(s);
     // Language the record leaves out goes to a side file; goals are built from per-step facts and tags.
     const full = s.ev.map((e, i) => (e.full ? [i, e.full] : null)).filter(Boolean);

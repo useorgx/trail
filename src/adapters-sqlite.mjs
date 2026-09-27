@@ -117,3 +117,94 @@ export async function readCursor(file) {
     return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: askMode ? 'plan' : null, ev, reasoning };
   } finally { d.close(); }
 }
+
+// ---- Cursor (the editor): conversations live in one SQLite key-value store, one record per conversation
+// ('composerData:<id>', with its message order) and one per message ('bubbleId:<conversation>:<message>').
+// Messages: type 1 = the person, type 2 = the agent (text, thinking, or a tool call in toolFormerData).
+export const CURSOR_IDE_DB = () => process.env.TRAIL_CURSOR_DB || (process.platform === 'darwin'
+  ? path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb')
+  : process.platform === 'win32' ? path.join(process.env.APPDATA || '', 'Cursor', 'User', 'globalStorage', 'state.vscdb')
+    : path.join(os.homedir(), '.config', 'Cursor', 'User', 'globalStorage', 'state.vscdb'));
+const IDE_TOOL = { run_terminal_cmd: 'Bash', read_file: 'Read', edit_file: 'Edit', search_replace: 'Edit', delete_file: 'Edit', grep_search: 'Grep', codebase_search: 'Grep', list_dir: 'Glob', file_search: 'Glob', todo_write: 'TodoWrite', web_search: 'WebSearch' };
+
+/**
+ * One entry per conversation. Reading every conversation's timestamp costs ~10 s on a large store, so it is cached
+ * in a sidecar and redone only for conversations that are new or recently active when the database has changed.
+ */
+export function discoverCursorIDE(since, cacheFile) {
+  const file = CURSOR_IDE_DB(); let st; try { st = fs.statSync(file); } catch { return []; }
+  let cache = { dbMtime: 0, composers: {} }; try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch {}
+  if (cache.dbMtime !== st.mtimeMs) {
+    const d = db(file); if (!d) return [];
+    try {
+      const recent = new Map(d.prepare('SELECT composerId, lastUpdatedAt FROM composerHeaders').all().map((r) => [r.composerId, Number(r.lastUpdatedAt) || 0]));
+      const keys = d.prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%'").all().map((r) => r.key.slice(13));
+      const one = d.prepare("SELECT json_extract(value, '$.lastUpdatedAt') u, json_extract(value, '$.createdAt') c FROM cursorDiskKV WHERE key = ?");
+      const next = {};
+      for (const id of keys) {
+        if (recent.has(id)) next[id] = recent.get(id);
+        else if (cache.composers[id]) next[id] = cache.composers[id];
+        else { const r = one.get('composerData:' + id); next[id] = Number(r?.u || r?.c) || st.mtimeMs; }
+      }
+      cache = { dbMtime: st.mtimeMs, composers: next, folders: cursorFolders(path.dirname(path.dirname(file))) }; fs.writeFileSync(cacheFile, JSON.stringify(cache), { mode: 0o600 });
+    } catch { return []; } finally { d.close(); }
+  }
+  return Object.entries(cache.composers).filter(([, u]) => !since || u >= since.getTime()).map(([id, u]) => ({ file: `${file}#${id}`, client: 'cursor-ide', size: 0, mtimeMs: u }));
+}
+
+/** Conversation → folder, from each workspace's own store (workspaceStorage/<id>/state.vscdb, 'composer.composerData'). */
+function cursorFolders(userDir) {
+  const ws = path.join(userDir, 'workspaceStorage'); const map = {};
+  let dirs = []; try { dirs = fs.readdirSync(ws); } catch { return map; }
+  for (const dname of dirs) {
+    let folder; try { folder = JSON.parse(fs.readFileSync(path.join(ws, dname, 'workspace.json'), 'utf8')).folder; } catch { continue; }
+    const f = path.join(ws, dname, 'state.vscdb'); if (!folder?.startsWith('file://') || !fs.existsSync(f)) continue;
+    const w = db(f); if (!w) continue;
+    try { const r = w.prepare("SELECT value FROM ItemTable WHERE key = 'composer.composerData'").get(); for (const c of (r ? JSON.parse(String(r.value)).allComposers : null) || []) map[c.composerId] = decodeURIComponent(folder.slice(7)); } catch {} finally { w.close(); }
+  }
+  return map;
+}
+let FOLDERS;
+const folderOf = (id) => { if (FOLDERS === undefined) { try { FOLDERS = JSON.parse(fs.readFileSync(path.join(process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail'), 'cursor-ide-index.json'), 'utf8')).folders || {}; } catch { FOLDERS = {}; } } return FOLDERS[id]; };
+
+const parseJSON = (s) => { if (s == null) return null; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return null; } };
+/** The repo a conversation worked in: the nearest folder with a .git above the first absolute path a tool touched. */
+function repoOf(paths) {
+  for (const p of paths) {
+    let dir = path.dirname(p);
+    for (let k = 0; k < 8 && dir.length > 1; k++, dir = path.dirname(dir)) if (fs.existsSync(path.join(dir, '.git'))) return dir;
+  }
+  return paths[0] ? path.dirname(paths[0]) : null;
+}
+
+export async function readCursorIDE(ref) {
+  const i = ref.lastIndexOf('#'); const file = ref.slice(0, i), id = ref.slice(i + 1);
+  const d = db(file); const ev = []; const reasoning = []; const paths = [];
+  if (!d) return { client: 'cursor-ide', id, start: null, end: null, cwd: null, model: null, mode: null, ev, reasoning };
+  try {
+    const comp = parseJSON(String(d.prepare('SELECT value FROM cursorDiskKV WHERE key = ?').get('composerData:' + id)?.value ?? 'null')) || {};
+    const bubble = d.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');
+    for (const h of comp.fullConversationHeadersOnly || []) {
+      const b = parseJSON(String(bubble.get(`bubbleId:${id}:${h.bubbleId}`)?.value ?? 'null')); if (!b) continue;
+      const ts = h.createdAt || iso(b.createdAt);
+      if (b.type === 1) { const x = String(b.text || '').trim(); if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'human' }); continue; }
+      if (b.thinking?.text) reasoning.push({ i: ev.length, ts, text: String(b.thinking.text).slice(0, 6000) });
+      const t = b.toolFormerData;
+      if (t?.name) {
+        const params = parseJSON(t.params) || parseJSON(t.rawArgs) || {}; const raw = String(t.name); const tool = IDE_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw);
+        const target = String(params.command ?? params.target_file ?? params.file_path ?? params.relative_workspace_path ?? params.query ?? params.pattern ?? params.search_term ?? '').slice(0, 240);
+        for (const v of [params.target_file, params.file_path]) if (typeof v === 'string' && v.startsWith('/')) paths.push(v);
+        const result = typeof t.result === 'string' ? t.result : JSON.stringify(t.result ?? '');
+        const err = t.status === 'error'; const denied = t.status === 'cancelled' || t.status === 'rejected';
+        const e = { k: 'tool', ts, client: 'cursor-ide', tool, rawTool: raw, target, err: err || denied, denied, errText: err || denied ? result.slice(0, 400) : '' };
+        if (!e.err && tool === 'Bash') e.outTail = result.slice(-400);
+        ev.push(e); continue;
+      }
+      const x = String(b.text || '').trim();
+      if (x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) });
+    }
+    const mode = { agent: null, ask: 'plan', plan: 'plan' }[comp.unifiedMode] ?? null;
+    const at = ev.map((e) => e.ts).filter(Boolean);
+    return { client: 'cursor-ide', id: 'cursor-' + id, start: iso(comp.createdAt) || at[0] || null, end: iso(comp.lastUpdatedAt) || at.at(-1) || null, cwd: folderOf(id) || repoOf(paths), model: comp.modelConfig?.modelName || null, mode, ev, reasoning };
+  } finally { d.close(); }
+}

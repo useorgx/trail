@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverOpenCode, discoverCursor } from './adapters-sqlite.mjs';
+import { discoverOpenCode, discoverCursor, discoverCursorIDE } from './adapters-sqlite.mjs';
 import { redactDeep } from './redact.mjs';
 
 export const VERSION = 'trail-1.2';
@@ -71,5 +71,6 @@ export function discover({ since, client } = {}) {
   if (!client || client === 'codex') walk(path.join(H, '.codex', 'sessions'), (n) => n.startsWith('rollout-') && n.endsWith('.jsonl'), 'codex');
   if (!client || client === 'opencode') out.push(...discoverOpenCode(since));
   if (!client || client === 'cursor') out.push(...discoverCursor(since));
+  if (!client || client === 'cursor-ide') out.push(...discoverCursorIDE(since, path.join(HOME, 'cursor-ide-index.json')));
   return out;
 }

@@ -28,7 +28,8 @@ export async function scan(o = {}) {
       w.on('message', (m) => {
         if (m.progress) { w.partial += m.progress; st.streamed += m.progress; o.onProgress?.(st); return; }
         const f = w.current; st.done++; st.doneBytes += f.size; st.streamed -= w.partial; w.partial = 0;
-        if (m.ok) { writeSession(m.sess); index.files[f.file] = { size: f.size, mtimeMs: f.mtimeMs, id: m.sess.id }; o.onSession?.(m.sess, st); }
+        if (m.ok && m.skip) { index.files[f.file] = { size: f.size, mtimeMs: f.mtimeMs, id: null }; }
+        else if (m.ok) { writeSession(m.sess); index.files[f.file] = { size: f.size, mtimeMs: f.mtimeMs, id: m.sess.id }; o.onSession?.(m.sess, st); }
         else st.failures.push({ file: f.file, error: m.error });
         o.onProgress?.(st); next();
       });

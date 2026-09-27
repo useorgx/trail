@@ -63,11 +63,62 @@ export async function readClaude(file) {
   return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev, reasoning };
 }
 
+// Codex writes two views of the same work. Older rollouts only have raw model items (function_call / *_output),
+// where the actual commands sit inside JavaScript `exec` cells. Current rollouts also emit structured
+// `item_completed` records: CommandExecution (argv, cwd, exit code, output), McpToolCall (server, tool, status),
+// FileChange (paths, status), Reasoning summaries, messages, compactions. Those are read when present.
+const shellCmd = (argv) => (Array.isArray(argv) ? (argv.length >= 3 && /(^|\/)(ba|z|)sh$/.test(argv[0]) && /^-l?c$/.test(argv[1]) ? argv.slice(2).join(' ') : argv.join(' ')) : String(argv ?? ''));
+const fileUrl = (u) => (typeof u === 'string' ? decodeURIComponent(u.replace(/^file:\/\//, '')) : null);
+const textOf = (content) => (Array.isArray(content) ? content.map((c) => c.text || '').join(' ') : String(content ?? '')).trim();
+const SANDBOX_DENIED = /sandbox|Operation not permitted|permission denied|not allowed|rejected by (the )?user|approval (was )?(denied|rejected)/i;
+
+function codexItem(it, ts, sink) {
+  const { ev, reasoning } = sink;
+  switch (it.type) {
+    case 'UserMessage': { const x = textOf(it.content); if (x && !HARNESS.test(x) && !x.startsWith('<')) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: /^Automation:/.test(x) ? 'schedule' : HOOKISH.test(x) ? 'hook' : 'human' }); break; }
+    case 'HookPrompt': { const x = (it.fragments || []).map((f) => f.text || '').join(' ').trim(); if (x) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'hook' }); break; }
+    case 'AgentMessage': { const x = textOf(it.content); if (x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) }); break; }
+    case 'Reasoning': { const x = (it.summary_text || []).map((t) => (typeof t === 'string' ? t : t?.text || '')).join('\n').trim(); if (x) reasoning.push({ i: ev.length, ts, text: x.slice(0, 6000) }); break; }
+    case 'ContextCompaction': ev.push({ k: 'compact', ts }); break;
+    case 'CommandExecution': {
+      const target = shellCmd(it.command).slice(0, 240); const out = String(it.aggregated_output || it.stderr || it.stdout || '');
+      const code = Number(it.exit_code); const err = it.status === 'failed' || it.status === 'declined' || (Number.isFinite(code) && code !== 0);
+      const denied = it.status === 'declined' || (err && SANDBOX_DENIED.test(out));
+      const e = { k: 'tool', ts, client: 'codex', tool: 'Bash', rawTool: 'exec_command', target, err, denied, errText: err ? (out.slice(0, 380) + (Number.isFinite(code) ? ` (exit ${code})` : '')).trim() : '', exitCode: Number.isFinite(code) ? code : null };
+      if (!err && SHIP.test(target)) e.out = out.slice(0, 300);
+      if (CHECK.test(target)) e.outTail = out.slice(-400);
+      ev.push(e); sink.cwd ??= fileUrl(it.cwd); break;
+    }
+    case 'McpToolCall': {
+      const failed = it.status === 'failed' || /isError['"]?:\s*(True|true)/.test(String(it.result ?? ''));
+      ev.push({ k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? String(it.result ?? '').slice(0, 400) : '' });
+      break;
+    }
+    case 'FileChange': {
+      const failed = it.status && it.status !== 'completed';
+      for (const f of Object.keys(it.changes || {}).slice(0, 20)) ev.push({ k: 'tool', ts, client: 'codex', tool: 'apply_patch', rawTool: 'apply_patch', target: f.slice(0, 240), err: failed, denied: failed && SANDBOX_DENIED.test(String(it.stderr || '')), errText: failed ? String(it.stderr || it.stdout || '').slice(0, 400) : '' });
+      break;
+    }
+    case 'ImageView': ev.push({ k: 'tool', ts, client: 'codex', tool: 'Read', rawTool: 'view_image', target: String(fileUrl(it.path) || '').slice(0, 240), err: false, denied: false, errText: '' }); break;
+    case 'Extension': ev.push({ k: 'tool', ts, client: 'codex', tool: it.kind || 'extension', rawTool: it.kind || 'extension', target: '', err: it.status === 'failed', denied: false, errText: '' }); break;
+  }
+}
+
 export async function readCodex(file) {
+  const items = { ev: [], reasoning: [], cwd: null }; let usage = null; const usageEvents = []; let interrupts = 0;
   const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
   for await (const l of lines(file)) {
     const head = l.slice(0, 220);
-    if (/"type":"(token_count|world_state|token_usage_record|turn_context|inter_agent)/.test(head)) continue;
+    if (head.includes('"item_completed"')) { const d = safeJSON(l); const it = d?.payload?.item; if (it) codexItem(it, d.timestamp, items); continue; }
+    if (head.includes('"token_count"')) {
+      const d = safeJSON(l); const info = d?.payload?.info; const last = info?.last_token_usage;
+      if (info?.total_token_usage) usage = info.total_token_usage;
+      if (last) usageEvents.push({ i: items.ev.length, ts: d.timestamp, input: last.input_tokens | 0, cached: last.cached_input_tokens | 0, output: last.output_tokens | 0, reasoning: last.reasoning_output_tokens | 0 });
+      continue;
+    }
+    if (head.includes('"turn_aborted"')) { interrupts++; continue; }
+    if (head.includes('"turn_context"')) { if (!cwd) cwd = fileUrl(safeJSON(l)?.payload?.cwd) || safeJSON(l)?.payload?.cwd || null; continue; }
+    if (/"type":"(world_state|token_usage_record|inter_agent)/.test(head)) continue;
     if (/"type":"reasoning"/.test(l.slice(0, 400))) {
       // Raw reasoning is encrypted; the summary, when present, is the readable part.
       if (l.includes('"summary":[{')) { const d = safeJSON(l); const t = (d?.payload?.summary || []).map((x) => x.text || '').join('\n'); if (t) reasoning.push({ i: ev.length, ts: d.timestamp, text: t.slice(0, FULL) }); }
@@ -117,5 +168,8 @@ export async function readCodex(file) {
       }
     }
   }
-  return { client: 'codex', start, end, cwd, model, mode: topMode(modes), ev, reasoning };
+  // Structured items when the rollout has them (current Codex), raw items otherwise (older rollouts).
+  const useItems = items.ev.length > 0;
+  return { client: 'codex', start, end, cwd: cwd || items.cwd, model, mode: topMode(modes), ev: useItems ? items.ev : ev, reasoning: useItems ? items.reasoning : reasoning,
+    usage: usage ? { input: usage.input_tokens | 0, cached: usage.cached_input_tokens | 0, output: usage.output_tokens | 0, reasoning: usage.reasoning_output_tokens | 0 } : null, usageEvents: useItems ? usageEvents : [], interrupts, format: useItems ? 'items' : 'raw' };
 }
