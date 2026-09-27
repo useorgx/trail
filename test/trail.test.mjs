@@ -189,3 +189,28 @@ test('connect: uses an existing key without running the wizard, and hands sign-i
     assert.deepEqual(ran.slice(1, 4), ['@useorgx/wizard@latest', 'auth', 'login']);
   } finally { process.env.HOME = home; }
 });
+
+test('steps and goals: a recovery stays inside its goal, outcome and backtrack point at their steps', async () => {
+  const { threadify } = await import('../src/classify.mjs');
+  const { steps, stepFacts } = await import('../src/steps.mjs');
+  const { buildGoals } = await import('../src/goals.mjs');
+  const T = (tool, target, extra = {}) => ({ k: 'tool', ts: '2026-09-27T00:00:00Z', tool, rawTool: tool, target, err: false, denied: false, errText: '', ...extra });
+  const s = { ev: [
+    { k: 'ask', ts: '2026-09-27T00:00:00Z', text: 'fix the failing build and open a PR', who: 'human' },
+    T('Bash', 'pnpm build', { err: true, errText: 'Cannot find module x' }),
+    T('Bash', 'pnpm build', { err: true, errText: 'Cannot find module x' }),
+    { k: 'say', ts: '2026-09-27T00:00:01Z', text: 'Actually the real cause is a stale lockfile, not the import. Reinstalling instead.' },
+    T('Bash', 'pnpm install'),
+    T('Edit', '/repo/src/a.ts'),
+    T('Bash', 'pnpm test', { outTail: 'Tests  12 passed (12)' }),
+    T('Bash', 'gh pr create --fill', { out: 'https://github.com/o/r/pull/42' }),
+    { k: 'say', ts: '2026-09-27T00:00:02Z', text: 'Opened PR #42: the build failed because the lockfile was stale; reinstalling fixed it, tests pass (12/12), and the change to a.ts is in the PR for review.' },
+  ], reasoning: [] };
+  assert.deepEqual(stepFacts(s.ev[6]), { action: 'test', result: 'pass' });
+  const r = threadify(s); assert.ok(r.threads.length >= 2, 'threadify still splits the recovery out as its own thread');
+  const goals = buildGoals(s, r, steps(s, { reasoning: [] }));
+  assert.equal(goals.length, 1, 'one goal: the recovery is an episode inside it');
+  assert.ok(goals[0].episodes.some((e) => e === 'recovery' || e.kind === 'recovery'));
+  assert.equal(goals[0].outcome.kind, 'shipped_checked'); assert.equal(goals[0].outcome.at, 7);
+  assert.equal(goals[0].backtracks.length, 1); assert.equal(goals[0].backtracks[0].at, 3); assert.equal(goals[0].backtracks[0].trigger, 'error');
+});

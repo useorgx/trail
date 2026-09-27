@@ -40,6 +40,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail watch        follow the session being written right now
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
+  trail goals        each piece of work: its detours, how it ended, where it changed course   (--json)
   trail walls        the walls your agents keep hitting, each with a fix   (--json for agents)
   trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
   trail copy <id>    copy a wall's fix: --as prompt (default) | rule | command
@@ -63,6 +64,22 @@ else if (cmd === 'scan') await scanView(opts);
 else if (cmd === 'explore') await explore();
 else if (cmd === 'watch') await watch(opts);
 else if (cmd === 'open') await serve({ port: +(val('port') || 4747) });
+else if (cmd === 'goals') {
+  // Goals: one per ask, detours inside, outcome read from the steps (src/goals.mjs).
+  const C = palette(opts.plain); const lim = +(val('limit') || 15);
+  const rows = []; outer: for (const s of [...loadSessions()].reverse()) for (const g of [...(s.goals || [])].reverse()) { rows.push({ s, g }); if (rows.length >= lim) break outer; }
+  if (flag('json')) console.log(JSON.stringify(rows.map(({ s, g }) => ({ session: s.id, client: s.client, project: s.project, start: s.start, ...g })), null, 1));
+  else {
+    const col = { done: C.teal, parked: C.amber, dropped: C.coral, open: C.iris, unclear: C.dim };
+    const all = loadSessions().flatMap((s) => s.goals || []); const by = {}; for (const g of all) by[g.status] = (by[g.status] || 0) + 1;
+    console.log(`\n${C.b}${all.length} goals${C.r} ${C.dim}(from ${loadSessions().filter((s) => s.goals).length} sessions still on disk)${C.r}  ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${col[k] || ''}${k} ${v}${C.r}`).join(' · ') + '\n');
+    for (const { s, g } of rows) {
+      const ep = {}; for (const e of g.episodes) ep[e] = (ep[e] || 0) + 1;
+      console.log(`  ${(s.start || '').slice(5, 10)} ${String(s.project).slice(0, 14).padEnd(14)} ${col[g.status] || ''}${g.outcome.kind.replace('_', ' ').padEnd(17)}${C.r} ${String(g.title).slice(0, 52).padEnd(52)} ${C.dim}${[...Object.entries(ep).map(([k, v]) => `${v} ${k}`), ...(g.backtracks.length ? [`${g.backtracks.length} backtrack${g.backtracks.length > 1 ? 's' : ''}`] : [])].join(' · ')}${C.r}`);
+    }
+    console.log('');
+  }
+}
 else if (cmd === 'summary') { const K = corpus(loadSessions(), loadAdoptions()); console.log(JSON.stringify({ ...K.tot, walls: K.walls.slice(0, 20).map(({ list, ...w }) => w), weeks: K.weeks }, null, 1)); }
 else if (cmd === 'connect') {
   try { const r = await connect({ base: val('base') });
