@@ -45,6 +45,9 @@ export function buildGoals(s, r, st, { sessionId } = {}) {
     // Steps inside the goal: tool and message steps it owns, plus reasoning placed before one of its events.
     const mine = st.filter((x) => g.own.has(x.at) || (x.kind === 'think' && x.at >= first && x.at <= last + 1 && g.own.has(Math.min(x.at, last))));
     g.outcome = outcome(mine, last === lastEvent);
+    // Observable, whatever the output said: did any test/typecheck/lint/build run after the last change?
+    const tl = mine.filter((x) => x.kind === 'tool'); const lastChange = Math.max(-1, ...tl.filter((x) => x.action === 'edit' && x.code).map((x) => x.at));
+    if (lastChange >= 0) g.checkedAfterChange = tl.some((x) => ['test', 'typecheck', 'lint', 'build'].includes(x.action) && x.result !== 'fail' && x.result !== 'denied' && x.at > lastChange);
     g.status = OUTCOME_STATUS[g.outcome.kind];
     g.backtracks = backtracks(mine);
     // Confidence per call. Outcome: its evidence kind, raised when Jev tagged the deciding message with confidence.

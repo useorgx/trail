@@ -6,6 +6,8 @@ import { loadSessions, loadAdoptions } from '../store.mjs';
 import { corpus } from '../metrics.mjs';
 import { buildGuard } from '../guard.mjs';
 import { ruleFor } from '../adopt.mjs';
+import { headline, expiringSoon } from '../headline.mjs';
+import { claudeRetention } from '../privacy.mjs';
 
 export async function scanView(opts) {
   const C = palette(opts.plain); const out = process.stdout; const live = !C.plain && out.isTTY;
@@ -58,8 +60,11 @@ export async function scanView(opts) {
   const say = (s) => out.write(s + '\n');
   say('');
   say(`  ${C.b}${res.todo ? `Read ${fmt(res.todo)} sessions (${fmt(res.bytes / 1e6)} MB) in ${res.secs.toFixed(1)}s` : 'Up to date. Nothing new since the last read.'}${C.r}${C.mid} · $0.00 · nothing left this machine${C.r}`);
-  const topW = [...wallSessions.entries()].sort((a, b) => b[1] - a[1])[0];
-  if (topW) say(`  ${C.mid}Your agents hit “${wallById(topW[0]).name}” in ${C.coral}${fmt(topW[1])}${C.mid} separate sessions, starting from zero each time.${C.r}`);
+  const all = loadSessions(); const h = headline(all);
+  if (h) say(`  ${C.ink}${h.text}${C.r}`);
+  // Claude Code deletes transcripts after cleanupPeriodDays (default 30). Say so while it can still be changed.
+  const soon = expiringSoon(all);
+  if (soon) say(`  ${C.amber}${fmt(soon)} Claude Code transcripts will be deleted by Claude Code within 7 days (it keeps ${claudeRetention()} days).${C.r}${C.mid} trail keeps their outlines; \`trail privacy\` shows how to keep the transcripts.${C.r}`);
   if (res.failures.length) say(`  ${C.dim}${res.failures.length} files could not be read.${C.r}`);
   return res;
 }

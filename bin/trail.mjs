@@ -13,7 +13,7 @@ import { watch } from '../src/ui/watch.mjs';
 import { serve } from '../src/serve.mjs';
 import { loadSessions, loadAdoptions, P } from '../src/store.mjs';
 import { corpus } from '../src/metrics.mjs';
-import { unadopt, adopt, targetsFor } from '../src/adopt.mjs';
+import { unadopt, adopt, adoptPreview, targetsFor } from '../src/adopt.mjs';
 import { actionFor, effectText, copy, wallId } from '../src/actions.mjs';
 import { sync, connect } from '../src/sync.mjs';
 import { experiments, METRICS } from '../src/experiments.mjs';
@@ -128,7 +128,12 @@ else if (cmd === 'walls' || cmd === 'adopt' || cmd === 'copy') {
     const w = find(argv[1]);
     if (!w) { console.error(`No wall matches "${argv[1] || ''}". See: trail walls`); process.exitCode = 1; }
     else if (cmd === 'copy') { const as = val('as') || 'prompt'; const text = w.action[as] ?? w.action.prompt; console.log(copy(text) ? `Copied the ${as} for “${w.name}”.` : text); }
-    else { const to = val('to') || targetsFor(w._w)[0]?.file; const r = adopt(w._w, to); console.log(`Wrote the fix for “${w.name}” into ${r.target}\nRemove it any time: trail unadopt ${r.id}`); }
+    else {
+      const to = val('to') || targetsFor(w._w)[0]?.file; const pv = adoptPreview(w._w, to);
+      console.log(`\n  ${pv.replaces ? 'Replace the block in' : pv.exists ? 'Append to' : 'Create'} ${to}:\n${pv.block.trim().split('\n').map((l) => '    + ' + l).join('\n')}\n  ${pv.exists ? 'A copy of the current file is kept in ~/.orgx/trail/backup. ' : ''}Remove it any time: trail unadopt ${pv.id}   (other files: --to <path>)`);
+      let ok = flag('yes'); if (!ok && process.stdin.isTTY) { const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout }); ok = /^y(es)?$/i.test((await new Promise((res) => rl.question('  Write it? [y/N] ', res))).trim()); rl.close(); }
+      if (ok) { const r = adopt(w._w, to); console.log(`  Wrote the fix for “${w.name}” into ${r.target}`); } else console.log('  Nothing written.' + (process.stdin.isTTY ? '' : ' Pass --yes to write without asking.'));
+    }
   }
 }
 else if (cmd === 'experiments') {

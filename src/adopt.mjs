@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { wallById } from './walls.mjs';
-import { loadAdoptions, saveAdoptions } from './store.mjs';
+import { loadAdoptions, saveAdoptions, HOME } from './store.mjs';
 
 export function ruleFor(wall) {
   const named = wallById(wall.sig);
@@ -26,11 +26,19 @@ export function targetsFor(wall) {
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48).replace(/^-|-$/g, '');
 const blockRe = (id) => new RegExp(`\\n?<!-- orgx-trail:${id} [^>]*-->[\\s\\S]*?<!-- /orgx-trail:${id} -->\\n?`, 'g');
 
-export function adopt(wall, target, rule = ruleFor(wall)) {
+/** Exactly what adopt would write, so the CLI can show it before touching the file. */
+export function adoptPreview(wall, target, rule = ruleFor(wall)) {
   const id = slug(wall.sig); const at = new Date().toISOString();
   const block = `\n<!-- orgx-trail:${id} adopted ${at.slice(0, 10)} · seen in ${wall.sessions} sessions · remove with: trail unadopt ${id} -->\n- ${rule}\n<!-- /orgx-trail:${id} -->\n`;
+  return { id, at, block, target, exists: fs.existsSync(target), replaces: fs.existsSync(target) && blockRe(id).test(fs.readFileSync(target, 'utf8')) };
+}
+
+export function adopt(wall, target, rule = ruleFor(wall)) {
+  const { id, at, block } = adoptPreview(wall, target, rule);
   let cur = ''; try { cur = fs.readFileSync(target, 'utf8'); } catch {}
   fs.mkdirSync(path.dirname(target), { recursive: true });
+  // A copy of the file as it was, before trail touched it.
+  if (cur) { const dir = path.join(HOME, 'backup'); fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.writeFileSync(path.join(dir, `${path.basename(target)}.${Date.now()}`), cur, { mode: 0o600 }); }
   fs.writeFileSync(target, cur.replace(blockRe(id), '').replace(/\s*$/, '\n') + block);
   const ads = loadAdoptions().filter((a) => !(a.sig === wall.sig && a.target === target));
   ads.push({ sig: wall.sig, id, at, target, rule, sessionsBefore: wall.sessions }); saveAdoptions(ads);

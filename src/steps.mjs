@@ -34,7 +34,9 @@ export function stepFacts(e) {
   const out = `${e.out || ''} ${e.outTail || ''}`;
   const result = e.denied ? 'denied' : e.err ? 'fail' : FAIL.test(out) ? 'fail' : PASS.test(out) ? 'pass' : 'ok';
   const pr = `${x} ${out}`.match(/pull\/(\d+)|\bPR #(\d+)|#(\d{3,6})\b/);
-  return { action, result, ...(pr ? { pr: +(pr[1] || pr[2] || pr[3]) } : {}) };
+  // Edits to code (not docs, notes or config prose): what a check after the change is for.
+  const code = action === 'edit' && /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|c|cc|cpp|h|hpp|sql|vue|svelte|sh)\b/.test(x);
+  return { action, result, ...(code ? { code: true } : {}), ...(pr ? { pr: +(pr[1] || pr[2] || pr[3]) } : {}) };
 }
 /** A step that proves something: a check that passed, or a ship that went through. */
 export const isVerification = (f) => ['test', 'typecheck', 'lint', 'build'].includes(f.action) && f.result === 'pass';
