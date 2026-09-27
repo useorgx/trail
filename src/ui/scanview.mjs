@@ -66,7 +66,7 @@ export async function scanView(opts) {
   if (h) say(`  ${C.ink}${h.text}${C.r}`);
   // Claude Code deletes transcripts after cleanupPeriodDays (default 30). Say so while it can still be changed.
   const soon = expiringSoon(all);
-  if (soon) say(`  ${C.amber}${fmt(soon)} Claude Code transcripts will be deleted by Claude Code within 7 days (it keeps ${claudeRetention()} days).${C.r}${C.mid} trail keeps their outlines; \`trail privacy\` shows how to keep the transcripts.${C.r}`);
+  if (soon) say(`  ${C.amber}${fmt(soon)} Claude Code transcripts will be deleted by Claude Code within 7 days (it keeps ${claudeRetention()} days).${C.r}${C.mid} trail keeps their outlines; \`trail archive\` keeps the transcripts too.${C.r}`);
   if (res.failures.length) say(`  ${C.dim}${res.failures.length} files could not be read.${C.r}`);
   return res;
 }

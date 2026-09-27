@@ -6,9 +6,12 @@ const TC = env.COLORTERM === 'truecolor' || env.COLORTERM === '24bit' || /iTerm|
 export function palette(plain = plainMode()) {
   const rgb = (r, g, b, n) => (plain ? '' : TC ? `\x1b[38;2;${r};${g};${b}m` : `\x1b[38;5;${n}m`);
   const bg = (r, g, b, n) => (plain ? '' : TC ? `\x1b[48;2;${r};${g};${b}m` : `\x1b[48;5;${n}m`);
+  // TRAIL_PALETTE=cb swaps in Okabe–Ito colours, distinguishable with every common colour-vision deficiency
+  // (the default lime/amber pair collides for deuteranopes). Marks and glyphs already differ by shape as well.
+  const cb = /^(cb|okabe|okabe-ito|colorblind|colourblind)$/i.test(env.TRAIL_PALETTE || '');
   return {
-    lime: rgb(191, 255, 0, 154), teal: rgb(45, 212, 191, 43), iris: rgb(139, 140, 255, 105), coral: rgb(255, 122, 102, 209),
-    amber: rgb(245, 183, 0, 214), dim: rgb(108, 114, 122, 243), ink: rgb(236, 237, 238, 255), mid: rgb(167, 172, 179, 249),
+    lime: cb ? rgb(86, 180, 233, 74) : rgb(191, 255, 0, 154), teal: cb ? rgb(0, 158, 115, 36) : rgb(45, 212, 191, 43), iris: cb ? rgb(204, 121, 167, 175) : rgb(139, 140, 255, 105), coral: cb ? rgb(213, 94, 0, 166) : rgb(255, 122, 102, 209),
+    amber: cb ? rgb(240, 228, 66, 227) : rgb(245, 183, 0, 214), dim: rgb(108, 114, 122, 243), ink: rgb(236, 237, 238, 255), mid: rgb(167, 172, 179, 249),
     sel: bg(34, 38, 44, 236), tab: bg(236, 237, 238, 255) + rgb(12, 13, 15, 232),
     b: plain ? '' : '\x1b[1m', u: plain ? '' : '\x1b[4m', r: plain ? '' : '\x1b[0m', plain,
   };

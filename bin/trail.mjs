@@ -60,6 +60,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail sync         send thread outlines (never transcripts) to your OrgX workspace
                      --dry-run shows exactly what would be sent · --with-titles adds thread titles
 
+  Colour-blind palette: TRAIL_PALETTE=cb
   --since 2026-09-01   --client claude|codex|opencode|cursor   --plain   --rebuild
   Data: ${P.sessions}`;
 

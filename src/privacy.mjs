@@ -38,6 +38,7 @@ export function privacyText(C) {
     `  ${r.pii.on ? 'Names, emails, phones, addresses and account numbers are masked locally before sync --with-titles and deepen.' : 'Turn on with `trail privacy --pii on` (needs: pip install git+https://github.com/openai/privacy-filter).'}`,
     '',
     `${C.b}Your history${C.r}  Claude Code deletes transcripts older than ${C.b}${r.claudeRetentionDays} days${C.r}${r.claudeRetentionDays === 30 ? ' (its default)' : ''}. trail keeps its own outlines after that;`,
-    `  to keep the transcripts themselves, raise "cleanupPeriodDays" in ~/.claude/settings.json (0 turns transcripts off entirely).`,
+    `  to keep the transcripts themselves, run \`trail archive\` (private gzipped copies), or raise "cleanupPeriodDays" in`,
+    `  ~/.claude/settings.json (0 turns transcripts off entirely).`,
   ].join('\n');
 }
