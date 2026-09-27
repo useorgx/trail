@@ -7,7 +7,9 @@ import { threadify } from './classify.mjs';
 import { decide } from './decide.mjs';
 import { steps } from './steps.mjs';
 import { buildGoals } from './goals.mjs';
-import { writeLanguage } from './store.mjs';
+import { writeLanguage, writeReceipts } from './store.mjs';
+import { buildReceipt } from './receipt.mjs';
+import { clientLabel } from './clients.mjs';
 import { costOf, tokensOf, spanCost } from './cost.mjs';
 
 let acc = 0;
@@ -31,6 +33,11 @@ parentPort.on('message', async ({ file, client }) => {
     const ue = s.usageEvents || [];
     for (const t of r.threads) { const c = spanCost(ue, t.spans || [], s.model, client); if (c) t.cost = c; }
     for (const g of goals) { const c = spanCost(ue, g.spans || [], s.model, client); if (c) g.cost = c; }
+    // One Agent Work Receipt per piece of work (src/receipt.mjs).
+    try {
+      const meta = { client, id, model: s.model, mode: s.mode, cwd: s.cwd, label: clientLabel(client), start: s.start, end: s.end };
+      writeReceipts(id, goals.map((g) => buildReceipt(meta, g, st, r.threads.find((t) => t.id === g.root))));
+    } catch {}
     const tagCounts = {}; for (const x of st) if (x.tag) tagCounts[x.tag] = (tagCounts[x.tag] || 0) + 1;
     const sess = {
       id, client, file,

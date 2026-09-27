@@ -328,3 +328,24 @@ test('Copilot (VS Code), Gemini CLI and Factory Droid read into the same events'
   const d = await readDroid(df);
   assert.equal(d.cwd, '/work/web'); const dt = d.ev.find((e) => e.k === 'tool'); assert.equal(dt.tool, 'Bash'); assert.equal(dt.err, true); assert.match(dt.errText, /Cannot find module/);
 });
+
+test('receipts: one valid Agent Work Receipt per piece of work, with criteria checked against evidence', async () => {
+  const { validateAgentWorkReceipt } = await import('@useorgx/agent-work-receipt');
+  const { threadify } = await import('../src/classify.mjs'); const { steps } = await import('../src/steps.mjs');
+  const { buildGoals } = await import('../src/goals.mjs'); const { buildReceipt, extractIntent } = await import('../src/receipt.mjs');
+  assert.deepEqual(extractIntent('fix the failing test and open a PR, but do not touch the lockfile').criteria.map((c) => c.kind), ['pull_request', 'tests']);
+  assert.match(extractIntent('fix the failing test, do not touch the lockfile').constraints[0], /do not touch the lockfile/);
+  const T = (tool, target, extra = {}) => ({ k: 'tool', ts: '2026-09-27T00:00:01Z', tool, rawTool: tool, target, err: false, denied: false, errText: '', ...extra });
+  const s = { ev: [
+    { k: 'ask', ts: '2026-09-27T00:00:00Z', text: 'fix the failing test and open a PR', who: 'human' },
+    T('Edit', '/repo/src/a.ts'), T('Bash', 'pnpm test', { outTail: 'Tests  12 passed (12)' }), T('Bash', 'gh pr create --fill', { out: 'https://github.com/o/r/pull/42' }),
+    { k: 'say', ts: '2026-09-27T00:00:03Z', text: 'Opened PR #42: fixed the assertion in a.ts; the suite passes (12/12). Nothing else changed, and the lockfile is untouched.' } ], reasoning: [] };
+  const r = threadify(s); const st = steps(s, { reasoning: [] }); const [g] = buildGoals(s, r, st);
+  const rc = buildReceipt({ client: 'claude', id: 'sess-1', model: 'claude-opus-5-5', mode: 'default' }, g, st, r.threads.find((t) => t.id === g.root));
+  const v = validateAgentWorkReceipt(rc); assert.ok(v.ok, JSON.stringify(v.issues));
+  const ex = rc.extensions['org.orgx.trail/v1'];
+  assert.deepEqual(ex.criteria.map((c) => [c.kind, c.status]), [['pull_request', 'met'], ['tests', 'met']]);
+  assert.equal(rc.verification.status, 'passed'); assert.equal(rc.outcome.status, 'succeeded');
+  assert.equal(rc.artifacts.find((a) => a.name === 'a.ts').role, 'output', 'shipped after the edit: the deliverable');
+  assert.ok(rc.artifacts.some((a) => a.kind === 'pull_request' && a.ref.id === '42'));
+});

@@ -104,8 +104,8 @@ export function steps(s, lang = { reasoning: [], full: [] }) {
   for (let i = 0; i <= s.ev.length; i++) {
     while (r < think.length && think[r].i <= i) { const t = think[r++]; out.push({ at: t.i, kind: 'think', text: t.text, ...tagStep(t.text, 'think') }); }
     const e = s.ev[i]; if (!e) continue;
-    if (e.k === 'tool') out.push({ at: i, kind: 'tool', ...stepFacts(e) });
-    else if (e.k === 'say' || e.k === 'ask') { const text = full.get(i) || e.full || e.text; out.push({ at: i, kind: e.k, text, ...tagStep(text, e.k) }); }
+    if (e.k === 'tool') out.push({ at: i, kind: 'tool', ts: e.ts, tool: e.tool, target: e.target, ...(e.err ? { errText: String(e.errText || '').slice(0, 300) } : {}), ...((e.out || e.outTail) ? { out: String(e.out || e.outTail).slice(0, 300) } : {}), ...stepFacts(e) });
+    else if (e.k === 'say' || e.k === 'ask') { const text = full.get(i) || e.full || e.text; out.push({ at: i, kind: e.k, ts: e.ts, text, ...(e.who ? { who: e.who } : {}), ...tagStep(text, e.k) }); }
   }
   return out;
 }
