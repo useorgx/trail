@@ -35,7 +35,7 @@ for (const it of items) {
     const inter = [...own].filter((i) => now.has(i)).length; const jac = inter / Math.max(1, new Set([...own, ...now]).size);
     pred.set(it.key, t ? { ...toCodebook(t), boundaryStable: jac >= 0.9, backtracks: t.backs.length } : null);
   } else if (labeler.startsWith('model:')) {
-    try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status }); } catch { pred.set(it.key, null); }
+    try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status, ...(m.boundary ? { boundary: m.boundary } : {}), ...(m.backtracked != null ? { backtracks: m.backtracked >= 0.5 ? 1 : 0 } : {}), conf: m.conf }); } catch { pred.set(it.key, null); }
   } else if (labeler.startsWith('jury:')) {
     const m = labeler.slice(5);
     if (m === 'majority') { const js = ['haiku', 'sonnet', 'opus'].map((x) => juryOf(x, it)); if (!js.some(Boolean)) { pred.set(it.key, null); continue; } pred.set(it.key, { origin: vote(js.map((j) => j?.origin)), status: vote(js.map((j) => j?.status)), boundary: vote(js.map((j) => j?.boundary)) }); }
@@ -43,7 +43,7 @@ for (const it of items) {
   }
 }
 
-const fields = ['origin', 'status'].concat(labeler.startsWith('jury') ? ['boundary'] : []);
+const fields = ['origin', 'status'].concat(labeler.startsWith('jury') || labeler === 'model:jev' ? ['boundary'] : []);
 // Score only threads this labeler actually labeled (the jury never saw depth batches; some transcripts are gone).
 const allN = items.length; items.splice(0, items.length, ...items.filter((it) => pred.get(it.key)));
 const res = { n: items.length, coverage: `${items.length}/${allN}` }; const errors = [];
