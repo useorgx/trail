@@ -21,7 +21,7 @@ export function corpus(sessions, adoptions = []) {
   const W = new Map(); const walls = new Map(); const seenWall = new Set();
   const tot = { sessions: 0, threads: 0, tools: 0, errs: 0, denied: 0, asks: 0, human: 0, cont: 0, hooks: 0, compactions: 0,
     outcome: 0, abandoned: 0, open: 0, unresolved: 0, surprise: 0, discovery: 0, recovered: 0, walled: 0, backs: 0, ships: 0,
-    rediscoveryCalls: 0, wallCalls: 0, changed: 0, verified: 0, unverifiedDone: 0, contradiction: 0, ruleModelAgree: 0, ruleModelN: 0, lowConf: 0,
+    rediscoveryCalls: 0, wallCalls: 0, costUsd: 0, detourUsd: 0, pricedSessions: 0, changed: 0, verified: 0, unverifiedDone: 0, contradiction: 0, ruleModelAgree: 0, ruleModelN: 0, lowConf: 0,
     byClient: {} };
   const conf = new Array(10).fill(0);
   for (const s of sessions) {
@@ -30,6 +30,9 @@ export function corpus(sessions, adoptions = []) {
     W.set(wk, w);
     tot.sessions++; w.sessions++; tot.tools += s.tools; w.tools += s.tools; tot.errs += s.errs; tot.denied += s.denied; tot.asks += s.asks; w.asks += s.asks;
     tot.human += s.steers.human; w.human += s.steers.human; tot.cont += s.steers.cont; tot.hooks += s.steers.hook || 0; tot.compactions += s.compactions || 0;
+    if (s.cost != null) { tot.costUsd += s.cost; tot.pricedSessions++; }
+    // Cost of the detours in this session: recovery and wall threads (what a wall costs when it's hit).
+    const detour = s.threads.filter((t) => t.origin === 'surprise' && (t.kind === 'wall' || t.kind === 'recovery')).reduce((a, t) => a + (t.cost?.usd || 0), 0); tot.detourUsd += detour;
     const C = (tot.byClient[s.client] ||= { sessions: 0, threads: 0, tools: 0, surprise: 0, abandoned: 0, backs: 0 }); C.sessions++; C.tools += s.tools;
     for (const t of s.threads) {
       tot.threads++; w.threads++; C.threads++;
@@ -43,10 +46,11 @@ export function corpus(sessions, adoptions = []) {
       if (t.p_abandon != null) { tot.ruleModelN++; if ((t.status_rule === 'abandoned') === (t.p_abandon >= 0.5)) tot.ruleModelAgree++; conf[Math.min(9, Math.floor(Math.max(t.p_abandon, 1 - t.p_abandon) * 10))]++; if (Math.abs(t.p_abandon - 0.5) < 0.2) tot.lowConf++; }
     }
     for (const x of s.walls || []) {
-      const a = walls.get(x.sig) || { sig: x.sig, named: x.named, name: x.named ? wallById(x.sig)?.name : x.sig, tool: x.tool, sessions: 0, calls: 0, first: s.start, last: s.start, weeks: {}, clients: {}, projects: {}, samples: [], list: [] };
+      const a = walls.get(x.sig) || { sig: x.sig, named: x.named, name: x.named ? wallById(x.sig)?.name : x.sig, tool: x.tool, sessions: 0, calls: 0, detourUsd: 0, first: s.start, last: s.start, weeks: {}, clients: {}, projects: {}, samples: [], list: [] };
       a.sessions++; a.calls += x.n; a.last = s.start; a.weeks[wk] = (a.weeks[wk] || 0) + 1; a.clients[s.client] = (a.clients[s.client] || 0) + 1; a.projects[s.project] = (a.projects[s.project] || 0) + 1;
       if (a.samples.length < 3 && !a.samples.includes(x.sample)) a.samples.push(x.sample);
       a.list.push({ id: s.id, start: s.start, project: s.project, client: s.client, cwd: s.cwd, mode: s.mode, n: x.n });
+      a.detourUsd += detour / Math.max(1, (s.walls || []).length);
       walls.set(x.sig, a); tot.wallCalls += x.n; w.wallCalls += x.n;
       if (seenWall.has(x.sig)) tot.rediscoveryCalls += x.n; else seenWall.add(x.sig);
     }

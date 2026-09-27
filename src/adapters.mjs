@@ -24,6 +24,7 @@ const HOOKISH = /^\s*(Stop hook|<ci-monitor|Auto-fix|\[SYSTEM NOTIFICATION)/i;
 
 export async function readClaude(file) {
   const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
+  const usageById = new Map(); // streamed chunks repeat a message's usage: keep one per message id, placed where it first appeared
   for await (const l of lines(file)) {
     if (l.length < 20) continue;
     if (l.length > 60000 && l.includes('"tool_result"')) {
@@ -34,6 +35,8 @@ export async function readClaude(file) {
     const d = safeJSON(l); if (!d || d.isSidechain) continue;
     const ts = d.timestamp; if (ts) { start ??= ts; end = ts; }
     cwd ??= d.cwd; model ??= d.message?.model;
+    const u = d.type === 'assistant' && d.message?.usage;
+    if (u && d.message.id) { const prev = usageById.get(d.message.id); usageById.set(d.message.id, { i: prev ? prev.i : ev.length, ts: prev ? prev.ts : ts, model: d.message.model, input: u.input_tokens | 0, cacheWrite: u.cache_creation_input_tokens | 0, cached: u.cache_read_input_tokens | 0, output: u.output_tokens | 0 }); }
     if (d.permissionMode) modes[d.permissionMode] = (modes[d.permissionMode] || 0) + 1;
     let c = d.message?.content; if (typeof c === 'string') c = [{ type: 'text', text: c }];
     if (!Array.isArray(c)) continue;
@@ -60,7 +63,9 @@ export async function readClaude(file) {
       }
     }
   }
-  return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev, reasoning };
+  const usageEvents = [...usageById.values()];
+  const usage = usageEvents.length ? usageEvents.reduce((a, x) => ({ input: a.input + x.input, cacheWrite: a.cacheWrite + x.cacheWrite, cached: a.cached + x.cached, output: a.output + x.output }), { input: 0, cacheWrite: 0, cached: 0, output: 0 }) : null;
+  return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev, reasoning, usage, usageEvents };
 }
 
 // Codex writes two views of the same work. Older rollouts only have raw model items (function_call / *_output),
@@ -82,7 +87,10 @@ function codexItem(it, ts, sink) {
     case 'ContextCompaction': ev.push({ k: 'compact', ts }); break;
     case 'CommandExecution': {
       const target = shellCmd(it.command).slice(0, 240); const out = String(it.aggregated_output || it.stderr || it.stdout || '');
-      const code = Number(it.exit_code); const err = it.status === 'failed' || it.status === 'declined' || (Number.isFinite(code) && code !== 0);
+      const code = Number(it.exit_code);
+      // Exit 1 from a search or compare means "no match" / "differs", not a failure.
+      const benign = code === 1 && /^\s*(rg|grep|egrep|fgrep|ag|diff|cmp|test|\[|git (diff|grep)|pgrep|find)\b/.test(target) && !/error|fatal|exception/i.test(out.slice(0, 400));
+      const err = it.status === 'declined' || ((it.status === 'failed' || (Number.isFinite(code) && code !== 0)) && !benign);
       const denied = it.status === 'declined' || (err && SANDBOX_DENIED.test(out));
       const e = { k: 'tool', ts, client: 'codex', tool: 'Bash', rawTool: 'exec_command', target, err, denied, errText: err ? (out.slice(0, 380) + (Number.isFinite(code) ? ` (exit ${code})` : '')).trim() : '', exitCode: Number.isFinite(code) ? code : null };
       if (!err && SHIP.test(target)) e.out = out.slice(0, 300);
@@ -90,8 +98,9 @@ function codexItem(it, ts, sink) {
       ev.push(e); sink.cwd ??= fileUrl(it.cwd); break;
     }
     case 'McpToolCall': {
-      const failed = it.status === 'failed' || /isError['"]?:\s*(True|true)/.test(String(it.result ?? ''));
-      ev.push({ k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? String(it.result ?? '').slice(0, 400) : '' });
+      const res = typeof it.result === 'string' ? it.result : JSON.stringify(it.result ?? '');
+      const failed = it.status === 'failed' || /isError['"]?:\s*(True|true)/.test(res);
+      ev.push({ k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? res.replace(/^\{['"]content['"]:\s*\[\{['"]type['"]:\s*['"]text['"],\s*['"]text['"]:\s*/, '').slice(0, 400) : '' });
       break;
     }
     case 'FileChange': {

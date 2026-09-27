@@ -61,6 +61,8 @@ export async function scanView(opts) {
   say('');
   say(`  ${C.b}${res.todo ? `Read ${fmt(res.todo)} sessions (${fmt(res.bytes / 1e6)} MB) in ${res.secs.toFixed(1)}s` : 'Up to date. Nothing new since the last read.'}${C.r}${C.mid} · $0.00 · nothing left this machine${C.r}`);
   const all = loadSessions(); const h = headline(all);
+  const K2 = corpus(all, loadAdoptions());
+  if (K2.tot.pricedSessions) say(`  ${C.mid}Estimated spend at list prices: ${C.ink}$${fmt(Math.round(K2.tot.costUsd))}${C.mid} across ${fmt(K2.tot.pricedSessions)} sessions; ${C.coral}$${fmt(Math.round(K2.tot.detourUsd))}${C.mid} of it on recoveries and walls. (Your plan may bill differently.)${C.r}`);
   if (h) say(`  ${C.ink}${h.text}${C.r}`);
   // Claude Code deletes transcripts after cleanupPeriodDays (default 30). Say so while it can still be changed.
   const soon = expiringSoon(all);

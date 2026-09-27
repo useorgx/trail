@@ -101,7 +101,7 @@ else if (cmd === 'goals') {
     console.log(`\n${C.b}${all.length} goals${C.r} ${C.dim}(from ${loadSessions().filter((s) => s.goals).length} sessions still on disk)${C.r}  ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${col[k] || ''}${k} ${v}${C.r}`).join(' · ') + '\n');
     for (const { s, g } of rows) {
       const ep = {}; for (const e of g.episodes) ep[e] = (ep[e] || 0) + 1;
-      console.log(`  ${(s.start || '').slice(5, 10)} ${String(s.project).slice(0, 14).padEnd(14)} ${col[g.status] || ''}${g.outcome.kind.replace('_', ' ').padEnd(17)}${C.r} ${String(g.title).slice(0, 52).padEnd(52)} ${C.dim}${[...Object.entries(ep).map(([k, v]) => `${v} ${k}`), ...(g.backtracks.length ? [`${g.backtracks.length} backtrack${g.backtracks.length > 1 ? 's' : ''}`] : [])].join(' · ')}${C.r}`);
+      console.log(`  ${(s.start || '').slice(5, 10)} ${String(s.project).slice(0, 14).padEnd(14)} ${col[g.status] || ''}${g.outcome.kind.replace('_', ' ').padEnd(17)}${C.r} ${String(g.title).slice(0, 52).padEnd(52)} ${C.dim}${g.cost?.usd != null ? `$${g.cost.usd.toFixed(2).padStart(6)} ` : '        '}${[...Object.entries(ep).map(([k, v]) => `${v} ${k}`), ...(g.backtracks.length ? [`${g.backtracks.length} backtrack${g.backtracks.length > 1 ? 's' : ''}`] : [])].join(' · ')}${C.r}`);
     }
     console.log('');
   }
@@ -121,11 +121,15 @@ else if (cmd === 'sync') {
 }
 else if (cmd === 'walls' || cmd === 'adopt' || cmd === 'copy') {
   const K = corpus(loadSessions(), loadAdoptions());
-  const walls = K.walls.map((w) => ({ id: wallId(w.sig), name: w.name, sessions: w.sessions, calls: w.calls, first: w.first, last: w.last, clients: w.clients, action: actionFor(w), effect: w.adopted ? { ...w.adopted, summary: effectText(w.adopted).text } : null, _w: w }));
+  const walls = K.walls.map((w) => ({ id: wallId(w.sig), name: w.name, sessions: w.sessions, calls: w.calls, detour_usd: +(w.detourUsd || 0).toFixed(2), first: w.first, last: w.last, clients: w.clients, action: actionFor(w), effect: w.adopted ? { ...w.adopted, summary: effectText(w.adopted).text } : null, _w: w }));
   const find = (id) => walls.find((w) => w.id === id) || walls.find((w) => w.id.startsWith(id || '§'));
   if (cmd === 'walls') {
     if (flag('json')) console.log(JSON.stringify(walls.map(({ _w, ...w }) => w), null, 1));
-    else { for (const w of walls.slice(0, +(val('limit') || 15))) console.log(`${String(w.sessions).padStart(5)}  ${w.name}\n       ${w.effect ? 'adopted · ' + w.effect.summary : 'trail copy ' + w.id + '   ·   trail adopt ' + w.id}`); }
+    else {
+      const { PRICE_SOURCE } = await import('../src/cost.mjs');
+      for (const w of walls.slice(0, +(val('limit') || 15))) console.log(`${String(w.sessions).padStart(5)}  ${w.name}${w.detour_usd >= 0.01 ? `   ~$${w.detour_usd.toFixed(2)} in detours` : ''}\n       ${w.effect ? 'adopted · ' + w.effect.summary : 'trail copy ' + w.id + '   ·   trail adopt ' + w.id}`);
+      console.log(`\n  sessions · wall · estimated cost of the recoveries it caused, at list prices (${PRICE_SOURCE})`);
+    }
   } else {
     const w = find(argv[1]);
     if (!w) { console.error(`No wall matches "${argv[1] || ''}". See: trail walls`); process.exitCode = 1; }
