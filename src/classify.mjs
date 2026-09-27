@@ -153,6 +153,7 @@ function finish(t, isLast, n) {
   t.claim = [...new Set(t.claim)].slice(0, 3);
   t.notes = t.notes.length > 4 ? [...t.notes.slice(0, 2), ...t.notes.slice(-2)] : t.notes;
   t.feat = features(t, isLast, n);
+  if (t.resume) t.home = t.resume.id; // the thread this detour came from: goals.mjs stitches them back together
   delete t.resume; delete t.routed; delete t.recovered;
 }
 

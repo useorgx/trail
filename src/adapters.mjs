@@ -17,10 +17,13 @@ async function* lines(file) {
 const topMode = (m) => Object.entries(m).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 const safeJSON = (l) => { try { return JSON.parse(l); } catch { return null; } };
 const SHIP = /\bgit (commit|push)|gh pr (create|merge)/;
+// Checks whose output tail says whether they passed (kept so a step can point at its own evidence).
+export const CHECK = /\b(tsc|typecheck|vitest|jest|pytest|playwright test|eslint|lint|pnpm (test|check|build)|npm (test|run \S+)|cargo (test|build|check)|go (test|build|vet)|node --test|next build|tsup|vite build|make)\b/;
+const FULL = 6000; // full message length kept for the side file; events keep the 400-char cut so indices and outputs stay stable
 const HOOKISH = /^\s*(Stop hook|<ci-monitor|Auto-fix|\[SYSTEM NOTIFICATION)/i;
 
 export async function readClaude(file) {
-  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
+  const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
   for await (const l of lines(file)) {
     if (l.length < 20) continue;
     if (l.length > 60000 && l.includes('"tool_result"')) {
@@ -44,8 +47,11 @@ export async function readClaude(file) {
         const e = pend.get(b.tool_use_id); if (!e) continue;
         if (b.is_error) { e.err = true; e.errText = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 400); e.denied = /Permission to use/.test(e.errText); }
         else if (SHIP.test(e.target)) e.out = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300);
+        else if (CHECK.test(e.target)) e.outTail = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(-400);
+      } else if (d.type === 'assistant' && b.type === 'thinking' && b.thinking) {
+        reasoning.push({ i: ev.length, ts, text: b.thinking.slice(0, FULL) }); // i = the event it precedes
       } else if (d.type === 'assistant' && b.type === 'text' && (b.text || '').length > 25) {
-        ev.push({ k: 'say', ts, text: b.text.slice(0, 400) });
+        ev.push({ k: 'say', ts, text: b.text.slice(0, 400), ...(b.text.length > 400 ? { full: b.text.slice(0, FULL) } : {}) });
       } else if (d.type === 'assistant' && b.type === 'tool_use') {
         const i = b.input || {}; const rawTool = b.name; const tool = rawTool.split('__').pop();
         const target = String(i.file_path ?? i.command ?? i.pattern ?? i.url ?? i.query ?? i.skill ?? i.description ?? i.path ?? i.action ?? '').slice(0, 240);
@@ -54,14 +60,19 @@ export async function readClaude(file) {
       }
     }
   }
-  return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev };
+  return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev, reasoning };
 }
 
 export async function readCodex(file) {
-  const ev = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
+  const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
   for await (const l of lines(file)) {
     const head = l.slice(0, 220);
-    if (/"type":"(token_count|world_state|token_usage_record|turn_context|inter_agent)/.test(head) || /"type":"reasoning"/.test(l.slice(0, 400))) continue;
+    if (/"type":"(token_count|world_state|token_usage_record|turn_context|inter_agent)/.test(head)) continue;
+    if (/"type":"reasoning"/.test(l.slice(0, 400))) {
+      // Raw reasoning is encrypted; the summary, when present, is the readable part.
+      if (l.includes('"summary":[{')) { const d = safeJSON(l); const t = (d?.payload?.summary || []).map((x) => x.text || '').join('\n'); if (t) reasoning.push({ i: ev.length, ts: d.timestamp, text: t.slice(0, FULL) }); }
+      continue;
+    }
     if (/"thread_settings_applied"/.test(head)) {
       model ??= l.match(/"model":"([^"]+)"/)?.[1];
       // Codex approval policy → the closest Claude Code permission mode, so walls compare like with like.
@@ -82,7 +93,7 @@ export async function readCodex(file) {
       const x = (p.content || []).map((c) => c.text || '').join(' ').trim();
       if (!x) continue;
       if (p.role === 'user') { if (HARNESS.test(x) || x.startsWith('<')) continue; ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: /^Automation:/.test(x) ? 'schedule' : HOOKISH.test(x) ? 'hook' : 'human' }); }
-      else if (p.role === 'assistant' && x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400) });
+      else if (p.role === 'assistant' && x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, FULL) } : {}) });
     } else if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') {
       if (/^(sleep|wait|list_agents|request_user_input)/.test(p.name || '')) continue;
       const src = String(p.input ?? p.arguments ?? JSON.stringify(p.action ?? ''));
@@ -96,6 +107,7 @@ export async function readCodex(file) {
       const o = typeof p.output === 'string' ? p.output : (p.output || []).map((x) => x.text || '').join(' ');
       const head3 = o.slice(0, 3000);
       if (!/^Script failed|exited with code [1-9]|Exit code:? [1-9]|"exit_code":\s*[1-9]/.test(head3) && SHIP.test(e.target)) e.out = head3.slice(0, 300);
+      if (CHECK.test(e.target)) e.outTail = o.slice(-400);
       if (/^Script failed|exited with code [1-9]|Exit code:? [1-9]|"exit_code":\s*[1-9]/.test(head3)) {
         e.err = true;
         const m = head3.match(/(Script error:[^\n]*|exited with code \d+[^\n]*|Exit code:? \d+[^\n]*)/);
@@ -105,5 +117,5 @@ export async function readCodex(file) {
       }
     }
   }
-  return { client: 'codex', start, end, cwd, model, mode: topMode(modes), ev };
+  return { client: 'codex', start, end, cwd, model, mode: topMode(modes), ev, reasoning };
 }

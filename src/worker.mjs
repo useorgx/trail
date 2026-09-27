@@ -5,6 +5,9 @@ import { setByteListener } from './adapters.mjs';
 import { readSession } from './clients.mjs';
 import { threadify } from './classify.mjs';
 import { decide } from './decide.mjs';
+import { steps } from './steps.mjs';
+import { buildGoals } from './goals.mjs';
+import { writeLanguage } from './store.mjs';
 
 let acc = 0;
 setByteListener((n) => { acc += n; if (acc > 8e6) { parentPort.postMessage({ progress: acc }); acc = 0; } });
@@ -15,11 +18,20 @@ parentPort.on('message', async ({ file, client }) => {
   try {
     const s = await readSession(file, client);
     const r = threadify(s);
+    // Language the record leaves out goes to a side file; goals are built from per-step facts and tags.
+    const full = s.ev.map((e, i) => (e.full ? [i, e.full] : null)).filter(Boolean);
+    const lang = { reasoning: s.reasoning || [], full };
+    const id = s.id || path.basename(file).replace(/\.jsonl$/, '').slice(-36);
+    if (lang.reasoning.length || full.length) writeLanguage(id, lang);
+    const st = steps(s, lang); const goals = buildGoals(s, r, st);
+    const tagCounts = {}; for (const x of st) if (x.tag) tagCounts[x.tag] = (tagCounts[x.tag] || 0) + 1;
     const sess = {
-      id: s.id || path.basename(file).replace(/\.jsonl$/, '').slice(-36), client, file,
+      id, client, file,
       project: (s.cwd || '').split('/').filter(Boolean).slice(-1)[0] || '—', cwd: s.cwd, model: s.model, mode: s.mode,
       start: s.start, end: s.end, asks: s.ev.filter((e) => e.k === 'ask').length,
       tools: r.tools, errs: r.errs, denied: r.denied, compactions: r.compactions, steers: r.steers, walls: r.walls,
+      lang: { reasoning: lang.reasoning.length, full: full.length }, tags: tagCounts,
+      goals: goals.map((g) => ({ id: g.id, root: g.root, title: g.title, origin: g.origin, threads: g.threads, episodes: g.episodes.map((e) => e.kind), spans: g.spans, outcome: g.outcome, status: g.status, backtracks: g.backtracks })),
       threads: r.threads.map((t) => decide({ id: t.id, origin: t.origin, kind: t.kind, title: t.title, ask: t.ask, notes: t.notes, moves: t.moves, backs: t.backs, status: t.status, claim: t.claim, subj: t.subj, errs: t.errs, parent: t.parent, t0: t.t0, t1: t.t1, spans: t.spans || [], feat: t.feat })),
     };
     parentPort.postMessage({ ok: true, sess });

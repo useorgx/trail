@@ -59,7 +59,7 @@ export function discoverCursor(since) {
 }
 
 export async function readOpenCode(ref) {
-  const [file, id] = ref.split('#'); const d = db(file); const ev = [];
+  const [file, id] = ref.split('#'); const d = db(file); const ev = []; const reasoning = [];
   if (!d) return { client: 'opencode', id, start: null, end: null, cwd: null, model: null, mode: null, ev };
   try {
     const s = d.prepare('SELECT directory, model, time_created, time_updated FROM session WHERE id = ?').get(id) || {};
@@ -68,8 +68,9 @@ export async function readOpenCode(ref) {
     for (const r of rows) {
       const m = obj(r.m) || {}; const p = obj(r.p); if (!p) continue; const ts = iso(Number(r.t));
       if (p.type === 'text' && m.role === 'user') { const x = String(p.text || '').trim(); if (x && !p.synthetic && !HARNESS.test(x)) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'human' }); }
-      else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts, text: p.text.slice(0, 400) });
+      else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
       else if (p.type === 'compaction') ev.push({ k: 'compact', ts });
+      else if (p.type === 'reasoning' && p.text) reasoning.push({ i: ev.length, ts, text: String(p.text).slice(0, 6000) });
       else if (p.type === 'tool') {
         const st = p.state || {}; const raw = String(p.tool || 'tool'); const err = st.status === 'error'; const errText = err ? String(st.error || '').slice(0, 400) : '';
         const e = { k: 'tool', ts: iso(st.time?.start) || ts, client: 'opencode', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(st.input), err, denied: err && DENIED.test(errText), errText };
@@ -78,7 +79,7 @@ export async function readOpenCode(ref) {
       }
     }
     const model = obj(s.model); const at = ev.map((e) => e.ts).filter(Boolean);
-    return { client: 'opencode', id, start: iso(Number(s.time_created)) || at[0] || null, end: iso(Number(s.time_updated)) || at.at(-1) || null, cwd: s.directory || null, model: model?.id || null, mode: null, ev };
+    return { client: 'opencode', id, start: iso(Number(s.time_created)) || at[0] || null, end: iso(Number(s.time_updated)) || at.at(-1) || null, cwd: s.directory || null, model: model?.id || null, mode: null, ev, reasoning };
   } finally { d.close(); }
 }
 
@@ -86,7 +87,7 @@ export async function readOpenCode(ref) {
 // session's updatedAt. Ordering inside the session is exact (rowid); times are session-level.
 export async function readCursor(file) {
   const dir = path.dirname(file); const meta = obj((() => { try { return fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'); } catch { return '{}'; } })()) || {};
-  const start = iso(meta.createdAtMs), end = iso(meta.updatedAtMs) || start; const ev = []; const pend = new Map(); let askMode = false;
+  const start = iso(meta.createdAtMs), end = iso(meta.updatedAtMs) || start; const ev = []; const reasoning = []; const pend = new Map(); let askMode = false;
   const d = db(file); if (!d) return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: null, ev };
   try {
     for (const r of d.prepare("SELECT CAST(data AS TEXT) AS data FROM blobs WHERE json_valid(CAST(data AS TEXT)) = 1 ORDER BY rowid").all()) {
@@ -100,7 +101,8 @@ export async function readCursor(file) {
           const x = (raw.match(/<user_query>([\s\S]*?)<\/user_query>/)?.[1] ?? (raw.trim().startsWith('<') ? '' : raw)).trim();
           if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts: end, text: x.slice(0, 600), who: 'human' });
         }
-        else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts: end, text: p.text.slice(0, 400) });
+        else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts: end, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
+        else if (p.type === 'reasoning' && p.text) reasoning.push({ i: ev.length, ts: end, text: String(p.text).slice(0, 6000) });
         else if (p.type === 'tool-call') {
           const raw = String(p.toolName || 'tool'); const e = { k: 'tool', ts: end, client: 'cursor', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(p.args ?? p.input), err: false, denied: false, errText: '' };
           if (p.toolCallId) pend.set(p.toolCallId, e); ev.push(e);
@@ -112,6 +114,6 @@ export async function readCursor(file) {
       }
     }
     // Cursor's Ask mode is read-only, the closest match to Claude Code's plan mode.
-    return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: askMode ? 'plan' : null, ev };
+    return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: askMode ? 'plan' : null, ev, reasoning };
   } finally { d.close(); }
 }

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { discoverOpenCode, discoverCursor } from './adapters-sqlite.mjs';
 
-export const VERSION = 'trail-0.9';
+export const VERSION = 'trail-1.0';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),
@@ -12,12 +12,20 @@ export const P = {
   adoptions: path.join(HOME, 'adoptions.json'),
   labels: path.join(HOME, 'labels.jsonl'),
   summary: path.join(HOME, 'summary.json'),
+  language: path.join(HOME, 'language'),
 };
-export function ensure() { fs.mkdirSync(P.sessions, { recursive: true }); }
+export function ensure() { fs.mkdirSync(P.sessions, { recursive: true }); fs.mkdirSync(P.language, { recursive: true }); }
 const readJSON = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 export function loadIndex(rebuild) { const i = rebuild ? null : readJSON(P.index, null); return i && i.version === VERSION ? i : { version: VERSION, files: {} }; }
 export function saveIndex(i) { fs.writeFileSync(P.index, JSON.stringify(i)); }
 export function writeSession(s) { fs.writeFileSync(path.join(P.sessions, s.id + '.json'), JSON.stringify(s)); }
+/**
+ * The language the session record leaves out: reasoning (Claude thinking, Codex summaries) and full agent messages.
+ * Kept per session beside the record so the explorer never loads it; step tagging and deep views read it on demand.
+ * `reasoning[].i` is the event the reasoning precedes; `full` is [eventIndex, text] for messages longer than the cut.
+ */
+export function writeLanguage(id, lang) { fs.mkdirSync(P.language, { recursive: true }); fs.writeFileSync(path.join(P.language, id + '.json'), JSON.stringify(lang)); }
+export const loadLanguage = (id) => readJSON(path.join(P.language, id + '.json'), { reasoning: [], full: [] });
 export function loadSessions() {
   let names = []; try { names = fs.readdirSync(P.sessions); } catch { return []; }
   const out = [];
