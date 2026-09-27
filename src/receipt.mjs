@@ -159,7 +159,7 @@ export function buildReceipt(session, goal, steps, thread) {
     human_interventions,
     timestamps: { started_at: started, completed_at: completed, issued_at: completed },
     extensions: { [EXT]: {
-      goal_id: goal.id, root_thread: goal.root, origin: goal.origin, cwd: session.cwd || null,
+      goal_id: goal.id, root_thread: goal.root, origin: goal.origin, cwd: session.cwd || null, repo: session.repo || null, project: session.project || null,
       outcome_kind: goal.outcome?.kind || 'unclear',
       confidence: { outcome: goal.conf?.outcome ?? null, boundary: goal.conf?.boundary ?? null, backtracks: goal.conf?.backtracks ?? null, criteria: checked.length ? +Math.min(...checked.map((c) => c.confidence)).toFixed(2) : null },
       criteria: checked.map(({ id, kind, text, status, confidence, evidence_ids }) => ({ id, kind, text, status, confidence, evidence_ids })),

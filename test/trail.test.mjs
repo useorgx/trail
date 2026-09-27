@@ -349,3 +349,66 @@ test('receipts: one valid Agent Work Receipt per piece of work, with criteria ch
   assert.equal(rc.artifacts.find((a) => a.name === 'a.ts').role, 'output', 'shipped after the edit: the deliverable');
   assert.ok(rc.artifacts.some((a) => a.kind === 'pull_request' && a.ref.id === '42'));
 });
+
+test('work graph: receipts join across sessions by shared objects and continuations; text alone only suggests', async () => {
+  const { buildWorkstreams, parentsFor, objectsOf } = await import('../src/workstreams.mjs');
+  const R = (id, session, t, ask, { prs = [], files = [], cmds = [] } = {}) => ({
+    receipt_id: id, intent: { summary: ask.slice(0, 80), objective: ask }, outcome: { status: 'succeeded', summary: '' }, verification: { status: 'unverified', checks: [] }, cost: { total: 0.1 },
+    actions: [...files.map((f, i) => ({ id: `e${i}`, type: 'edit.edit', status: 'completed', summary: f, target_refs: [{ system: 'workspace', type: 'file', id: f }] })), ...cmds.map((c, i) => ({ id: `c${i}`, type: 'bash.run', status: 'completed', summary: c }))],
+    artifacts: prs.map((n) => ({ id: `pr-${n}`, kind: 'pull_request', name: `PR #${n}`, role: 'output', ref: { system: 'github', type: 'pull_request', id: String(n) } })),
+    lineage: { run_ref: { system: 'claude', type: 'session', id: session }, parent_receipt_refs: [], references: [] }, human_interventions: [], evidence: [],
+    timestamps: { started_at: t, completed_at: t, issued_at: t }, extensions: { 'org.orgx.trail/v1': { repo: 'app', criteria: [] } } });
+  const rs = [
+    R('a', 's1', '2026-09-20T10:00:00Z', 'add receipt upload to the sync command', { prs: [101], cmds: ['git checkout -b feat/receipts'] }),
+    R('b', 's2', '2026-09-21T10:00:00Z', 'review comments on the upload PR', { cmds: ['gh pr view 101'] }),
+    R('c', 's3', '2026-09-22T10:00:00Z', 'rebase and push', { cmds: ['git push origin feat/receipts'] }),
+    R('d', 's4', '2026-09-22T12:00:00Z', 'add receipt upload to the sync command with retries', {}),
+    R('e', 's5', '2026-09-23T09:00:00Z', 'polish the homepage hero', { files: ['/x/app/hero.tsx', '/x/app/hero.css'] }),
+    R('f', 's6', '2026-09-24T09:00:00Z', 'hero copy tweak', { files: ['/x/app/hero.tsx', '/x/app/hero.css'] }),
+  ];
+  assert.deepEqual(objectsOf(rs[0]).objects.map((o) => o.type).sort(), ['branch', 'pr']);
+  const b = buildWorkstreams(rs);
+  assert.equal(b.byReceipt.a, b.byReceipt.b, 'same PR (named) within days joins');
+  assert.equal(b.byReceipt.a, b.byReceipt.c, 'same branch joins');
+  assert.equal(b.byReceipt.d, undefined, 'similar words alone never join');
+  assert.ok(b.suggestions.some((s) => s.to === 'd' || s.from === 'd'), 'but they are suggested for review');
+  assert.equal(b.byReceipt.e, b.byReceipt.f, 'two rare files in common join');
+  assert.notEqual(b.byReceipt.a, b.byReceipt.e);
+  assert.equal(parentsFor(b).c[0].id, 'a', 'c continues a through the branch');
+  // A person's call wins: "unrelated" splits, "same_effort" joins.
+  const b2 = buildWorkstreams(rs, { decisions: { 'e>f': 'unrelated', 'a>d': 'same_effort' } });
+  assert.equal(b2.byReceipt.e, undefined); assert.equal(b2.byReceipt.a, b2.byReceipt.d);
+});
+
+test('work types: scored from ask + steps with a confidence; follow-ups inherit; area evidence rides along for OrgX', async () => {
+  const { classifyWorkType, leadVerb, areaCandidates, areaCandidatesOf, labelAll } = await import('../src/taxonomy.mjs');
+  assert.equal(leadVerb('yes can you fix the header'), 'fix'); assert.equal(leadVerb('why is the build red'), 'investigate');
+  const R = (ask, acts = []) => ({ receipt_id: ask, intent: { summary: ask, objective: ask }, actions: acts.map((t) => ({ type: `x.${t}` })), artifacts: [], extensions: { 'org.orgx.trail/v1': {} }, timestamps: { started_at: '2026-09-27T00:00:00Z' } });
+  assert.equal(classifyWorkType(R('TypeError: Cannot read properties of undefined at app.js:12:4', ['edit'])).id, 'fix');
+  assert.equal(classifyWorkType(R('why does the upload return 413?', ['read', 'read'])).id, 'investigate');
+  assert.equal(classifyWorkType(R('merge it and deploy', ['ship'])).id, 'ship');
+  const f = classifyWorkType(R('yes do it')); assert.equal(f.id, 'follow_up'); assert.ok(f.confidence < 0.5);
+  const labels = labelAll([R('implement retry on 429 in the sync command', ['edit', 'edit']), { ...R('yes do it'), timestamps: { started_at: '2026-09-27T00:01:00Z' } }], { links: [{ from: 'implement retry on 429 in the sync command', to: 'yes do it', confidence: 0.8, relationship: 'continues' }] }, { areas: {}, overrides: {} });
+  assert.equal(labels['yes do it'].work_type.id, 'feature'); assert.ok(labels['yes do it'].work_type.inherited_from);
+  assert.deepEqual(areaCandidates('/r/app/src/components/billing/Invoice.tsx', 'app', '/r/app'), ['billing']);
+  assert.deepEqual(areaCandidates('/tmp/x/y.ts', 'app', '/r/app'), []);
+  const r = { receipt_id: 'x', artifacts: [{ ref: { type: 'file', id: '/r/app/src/billing/a.ts' } }, { ref: { type: 'file', id: '/r/app/src/billing/b.ts' } }], extensions: { 'org.orgx.trail/v1': { repo: 'app', cwd: '/r/app' } } };
+  assert.ok(areaCandidatesOf(r).some((c) => c.segment === 'billing' && c.files === 2));
+});
+
+test('search: text ranked by BM25 with exact filters; every receipt leaves with lineage and labels and still validates', async () => {
+  const { validateAgentWorkReceipt } = await import('@useorgx/agent-work-receipt');
+  const { parseQuery } = await import('../src/search.mjs');
+  assert.deepEqual(parseQuery('upload retry outcome:blocked conf:<0.6 "rate limit"'), { filters: { outcome: 'blocked', conf: '<0.6' }, text: 'upload retry rate limit' });
+  const { threadify } = await import('../src/classify.mjs'); const { steps } = await import('../src/steps.mjs'); const { buildGoals } = await import('../src/goals.mjs'); const { buildReceipt } = await import('../src/receipt.mjs');
+  const { withGraph } = await import('../src/ledger.mjs'); const { buildWorkstreams, parentsFor } = await import('../src/workstreams.mjs'); const { labelAll } = await import('../src/taxonomy.mjs');
+  const T = (tool, target, extra = {}) => ({ k: 'tool', ts: '2026-09-27T00:00:01Z', tool, rawTool: tool, target, err: false, denied: false, errText: '', ...extra });
+  const mkSession = (id, ask) => { const s = { ev: [{ k: 'ask', ts: '2026-09-27T00:00:00Z', text: ask, who: 'human' }, T('Edit', '/repo/src/sync.mjs'), T('Bash', 'gh pr create --fill', { out: 'https://github.com/o/r/pull/7' }), { k: 'say', ts: '2026-09-27T00:00:03Z', text: 'Opened PR #7 with the retry.' }], reasoning: [] };
+    const r = threadify(s); const st = steps(s, { reasoning: [] }); const [g] = buildGoals(s, r, st); return buildReceipt({ client: 'claude', id, mode: 'default', repo: 'repo' }, g, st, r.threads.find((t) => t.id === g.root)); };
+  const receipts = [mkSession('s1', 'add retry on 429 to the sync upload and open a PR'), mkSession('s2', 'address review on PR #7')];
+  const built = buildWorkstreams(receipts); const L = { built, parents: parentsFor(built), labels: labelAll(receipts, built, { areas: {}, overrides: {} }), tax: { version: 'trail-taxonomy/1', revision: 3, areas: {}, overrides: {} }, byId: new Map(receipts.map((r) => [r.receipt_id, r])) };
+  const out = withGraph(receipts[1], L);
+  assert.equal(out.lineage.parent_receipt_refs[0].id, receipts[0].receipt_id);
+  assert.ok(out.extensions['org.orgx.trail/v1'].workstream.id.startsWith('ws_'));
+  const v = validateAgentWorkReceipt(out); assert.ok(v.ok, JSON.stringify(v.issues));
+});

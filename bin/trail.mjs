@@ -43,6 +43,11 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail summary      print the numbers as JSON
   trail deepen       get surer outcomes: Jev reads each step and piece of work · opt-in · quote shown first
                      pay with OrgX credits after trail connect, or use your own key with --key-file
+  trail receipts     one Agent Work Receipt per piece of work: asked, done, checked, delivered   (<id> for one · --json)
+  trail workstreams  pieces of work joined across sessions by shared PRs, branches, files, continuations   (<id> · --all)
+  trail search <q>   search the ledger: text plus filters like outcome:blocked type:fix repo:x pr:12 conf:<0.6 unmet:tests
+  trail review       questions about your own receipts only you can settle; answer with trail label
+  trail taxonomy     the work types trail labels with, and what OrgX grows from them
   trail goals        show each piece of work, its detours, its result, and each change of course   (--json)
   trail walls        find a wall: a failure your agents keep hitting in separate sessions   (--json for agents)
   trail adopt <id>   write a selected fix into AGENTS.md / CLAUDE.md        (--to <file>)
@@ -60,6 +65,7 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail connect      sign in to OrgX through the OrgX wizard (the one sign-in every OrgX tool shares)
   trail sync         send session outlines (never transcripts) to your OrgX workspace
                      --dry-run shows exactly what would be sent · --with-titles adds thread titles
+                     --receipts sends Agent Work Receipts instead (includes asks and summaries; redacted; opt-in)
 
   Colour-blind palette: TRAIL_PALETTE=cb
   --since 2026-09-01   --client claude|codex|opencode|cursor   --plain   --rebuild
@@ -109,11 +115,48 @@ else if (cmd === 'goals') {
     console.log('');
   }
 }
+else if (['receipts', 'workstreams', 'search', 'review', 'label', 'taxonomy'].includes(cmd)) {
+  const { ledger, rowOf, reviewQueue, teamQuestions } = await import('../src/ledger.mjs');
+  const { search, receiptDetail, workstreamDetail } = await import('../src/search.mjs');
+  const { overrideLabel, loadTaxonomy, WORK_TYPES } = await import('../src/taxonomy.mjs');
+  const C = palette(opts.plain); const json = flag('json'); const lim = +(val('limit') || 20);
+  const OUT = { succeeded: C.teal, partially_succeeded: C.amber, blocked: C.coral, failed: C.coral, unknown: C.dim };
+  const pct = (x) => (x == null ? '  —' : String(Math.round(x * 100)).padStart(3) + '%');
+  const line = (x) => `  ${String(x.at).slice(5, 10)} ${String(x.repo || '—').slice(0, 12).padEnd(12)} ${OUT[x.outcome] || ''}${x.outcome.replace('_', ' ').slice(0, 13).padEnd(13)}${C.r} ${String(x.work_type || '').padEnd(11)} ${C.dim}${pct(x.confidence)}${C.r} ${String(x.summary).replace(/\s+/g, ' ').slice(0, 58).padEnd(58)} ${C.dim}${x.id.split(':').slice(-2).join(':').slice(-22)}${x.criteria.unmet ? ` · ${x.criteria.unmet} unmet` : ''}${x.workstream ? ` · ${x.workstream}` : ''}${C.r}`;
+  const pos = argv.filter((a, i) => !a.startsWith('--') && !['--limit', '--name', '--into', '--since', '--client'].includes(argv[i - 1])); const sub = pos[1];
+  if (cmd === 'receipts' && sub && sub !== 'list') { const d = receiptDetail(sub); if (!d) { console.error(`No receipt matches "${sub}".`); process.exitCode = 1; } else console.log(JSON.stringify(d, null, 1)); }
+  else if (cmd === 'receipts') { const L = ledger(); const rows = L.receipts.slice().sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, lim).map((r) => rowOf(r, L));
+    if (json) console.log(JSON.stringify(rows, null, 1)); else { console.log(`\n${C.b}${L.receipts.length} receipts${C.r} ${C.dim}(one per piece of work · Agent Work Receipt v0.1 · trail receipts <id> for one)${C.r}\n`); rows.forEach((x) => console.log(line(x))); console.log(''); } }
+  else if (cmd === 'workstreams' && sub && sub !== 'list') { const d = workstreamDetail(sub); if (!d) { console.error(`No workstream matches "${sub}".`); process.exitCode = 1; } else if (json) console.log(JSON.stringify(d, null, 1)); else { console.log(`\n${C.b}${d.title}${C.r}  ${C.dim}${d.id} · ${d.status} · ${d.receipts.length} pieces of work over ${d.sessions} sessions · linked ${Object.entries(d.relationships).map(([k, v]) => `${k.replace('_', ' ')} ${v}`).join(', ')} · weakest link ${pct(d.weakest_link)}${C.r}\n  ${C.dim}objects: ${d.objects.map((o) => o.key).slice(0, 6).join(', ') || '—'}${C.r}\n`); d.members.forEach((x) => console.log(line(x))); console.log(''); } }
+  else if (cmd === 'workstreams') { const L = ledger(); let ws = L.built.workstreams; if (!flag('all')) ws = ws.filter((w) => w.sessions > 1);
+    if (json) console.log(JSON.stringify(ws.slice(0, lim), null, 1)); else { console.log(`\n${C.b}${ws.length} workstreams${C.r} ${C.dim}${flag('all') ? '' : 'spanning more than one session (--all for every one) · '}joined by shared PRs, branches, rare files, ids, and continuations${C.r}\n`);
+      for (const w of ws.slice(0, lim)) console.log(`  ${String(w.last_at).slice(5, 10)} ${String(w.repo || '—').slice(0, 12).padEnd(12)} ${({ done: C.teal, done_with_gaps: C.amber, blocked: C.coral, dropped: C.coral })[w.status] || C.dim}${w.status.replace(/_/g, ' ').padEnd(15)}${C.r} ${String(w.receipts.length).padStart(3)} pieces ${String(w.sessions).padStart(2)} sess ${C.dim}${pct(w.weakest_link)}${C.r} ${w.title.slice(0, 60).padEnd(60)} ${C.dim}${w.id}${C.r}`); console.log(''); } }
+  else if (cmd === 'search') { const q = argv.slice(1).filter((a, i, arr) => !a.startsWith('--') && !(arr[i - 1] === '--limit')).join(' '); const r = search(q, { limit: lim });
+    if (json) console.log(JSON.stringify(r, null, 1)); else { console.log(`\n${C.b}${r.total} match${r.total === 1 ? '' : 'es'}${C.r} ${C.dim}${JSON.stringify(r.query.filters) !== '{}' ? JSON.stringify(r.query.filters) + ' ' : ''}${r.query.text ? `“${r.query.text}”` : ''}${C.r}\n`); r.results.forEach((x) => console.log(line(x))); console.log(''); } }
+  else if (cmd === 'review') { const L = ledger(); const q = reviewQueue(L, { limit: lim });
+    if (json) console.log(JSON.stringify(q, null, 1)); else { console.log(`\n${C.b}Review queue${C.r} ${C.dim}— questions about your own work that only you can settle. Answers stay here and win over every guess.${C.r}\n`);
+      q.forEach((x, i) => console.log(`  ${String(i + 1).padStart(2)}. ${C.b}${x.question}${C.r} ${C.dim}guess: ${x.guess} (${pct(x.confidence).trim()})${C.r}\n      ${String(x.summary).replace(/\s+/g, ' ').slice(0, 100)}\n      ${C.dim}${x.kind === 'criterion' ? `trail label ${x.receipt} ${x.criterion}:met|unmet` : `trail label ${x.receipt} outcome:succeeded|failed|blocked|…`}${C.r}`));
+      const t = teamQuestions(L); console.log(`\n  ${C.dim}Team questions are answered in OrgX, with everyone's receipts in view: ${t.suggested_links} possible links between efforts, ${t.area_candidates} candidate code areas, ${t.unlabelled} pieces of work with an unclear type, and which initiative each workstream serves. trail sync --receipts --dry-run shows what would go.${C.r}\n`); } }
+  else if (cmd === 'label') { const [, id, ...pairs] = argv.filter((a) => !a.startsWith('--')); const patch = {}; const tax = loadTaxonomy();
+    for (const p of pairs) { const [k, v] = p.split(':'); if (k === 'type') patch.work_type = v; else if (k === 'outcome') patch.outcome = v; else if (/^c\d+$/.test(k)) patch.criteria = { ...(tax.overrides[id]?.criteria || {}), ...(patch.criteria || {}), [k]: v }; }
+    if (!id || !Object.keys(patch).length) { console.error('Usage: trail label <receipt-id> outcome:succeeded | c1:met | type:fix'); process.exitCode = 1; }
+    else { const r = overrideLabel(id, patch, 'human', tax); console.log(`Labelled ${id}: ${JSON.stringify(r)}`); } }
+  else if (cmd === 'taxonomy') { const L = ledger(); const counts = {}; for (const x of Object.values(L.labels)) counts[x.work_type.id] = (counts[x.work_type.id] || 0) + 1; const t = teamQuestions(L);
+    if (json) console.log(JSON.stringify({ version: L.tax.version, work_types: WORK_TYPES.map(({ re, ...w }) => ({ ...w, receipts: counts[w.id] || 0 })), follow_up: counts.follow_up || 0, other: counts.other || 0, team: t }, null, 1));
+    else { console.log(`\n${C.b}Work types${C.r} ${C.dim}(a fixed list, scored from the ask and what the agent did)${C.r}`); for (const w of WORK_TYPES) console.log(`  ${w.id.padEnd(12)} ${String(counts[w.id] || 0).padStart(5)}  ${C.dim}${w.about}${C.r}`); console.log(`  ${'follow_up'.padEnd(12)} ${String(counts.follow_up || 0).padStart(5)}  ${C.dim}short replies with nothing to inherit from${C.r}\n  ${'other'.padEnd(12)} ${String(counts.other || 0).padStart(5)}  ${C.dim}no signal${C.r}`);
+      console.log(`\n  ${C.dim}Areas of your codebase are grown in OrgX from the whole team's receipts: trail sends the evidence (${t.area_candidates} candidate segments here), OrgX proposes areas, your team confirms, renames or merges them, and maps work to initiatives.${C.r}\n`); } }
+}
 else if (cmd === 'summary') { const K = corpus(loadSessions(), loadAdoptions()); console.log(JSON.stringify({ ...K.tot, walls: K.walls.slice(0, 20).map(({ list, ...w }) => w), weeks: K.weeks }, null, 1)); }
 else if (cmd === 'connect') {
   try { const r = await connect({ base: val('base') });
     console.log(r.already ? `Already connected: using the OrgX key from ${r.credential}.` : `Connected: the wizard stored your key (${r.credential}).`);
     console.log('Nothing has been sent. `trail sync --dry-run` shows exactly what would go; `trail sync` sends it.'); }
+  catch (e) { console.error(e.message); process.exitCode = 1; }
+}
+else if (cmd === 'sync' && flag('receipts')) {
+  try { const { syncReceipts } = await import('../src/sync.mjs'); const r = await syncReceipts({ dryRun: flag('dry-run'), base: val('base'), limit: val('limit') ? +val('limit') : undefined, since: val('since') });
+    if (r.dryRun) { console.log(`Would send ${r.receipts} receipts to ${r.url} (${r.pending} not yet sent in total; --limit raises the batch)\nPrivacy: ${r.privacy}. Receipts include the ask, summaries, command lines and short output excerpts.\n\nOne receipt exactly as it would be sent:`); console.log(JSON.stringify(r.example, null, 1)); }
+    else console.log(`Sent ${r.receipts} receipts to ${r.url}${r.duplicate ? ` (${r.duplicate} were already there)` : ''} · ${r.privacy} · key from ${r.credential}${r.refused.length ? `\nRefused ${r.refused.length}: ${JSON.stringify(r.refused.slice(0, 3))}` : ''}${r.remaining ? `\n${r.remaining} still to send: run it again, or --limit N` : ''}`); }
   catch (e) { console.error(e.message); process.exitCode = 1; }
 }
 else if (cmd === 'sync') {

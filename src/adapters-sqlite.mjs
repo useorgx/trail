@@ -191,8 +191,10 @@ export async function readCursorIDE(ref) {
       if (b.thinking?.text) reasoning.push({ i: ev.length, ts, text: String(b.thinking.text).slice(0, 6000) });
       const t = b.toolFormerData;
       if (t?.name) {
-        const params = parseJSON(t.params) || parseJSON(t.rawArgs) || {}; const raw = String(t.name); const tool = IDE_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw);
-        const target = String(params.command ?? params.target_file ?? params.file_path ?? params.relative_workspace_path ?? params.query ?? params.pattern ?? params.search_term ?? '').slice(0, 240);
+        // Cursor keeps the call's arguments in two places (params, rawArgs) with different key spellings across versions.
+        const rawArgs = typeof t.rawArgs === 'string' ? t.rawArgs : ''; const params = { ...(parseJSON(rawArgs) || {}), ...(parseJSON(t.params) || {}) }; const raw = String(t.name); const tool = IDE_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw);
+        const patchFile = rawArgs.match(/\*\*\* (?:Update|Add|Delete) File: ([^\n"\\]+)/)?.[1];
+        const target = String(params.command ?? params.target_file ?? params.targetFile ?? params.file_path ?? params.filePath ?? params.relativeWorkspacePath ?? params.relative_workspace_path ?? params.path ?? patchFile ?? params.query ?? params.pattern ?? params.search_term ?? params.searchTerm ?? '').slice(0, 240);
         for (const v of [params.target_file, params.file_path]) if (typeof v === 'string' && v.startsWith('/')) paths.push(v);
         const result = typeof t.result === 'string' ? t.result : JSON.stringify(t.result ?? '');
         const err = t.status === 'error'; const denied = t.status === 'cancelled' || t.status === 'rejected';

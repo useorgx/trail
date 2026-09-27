@@ -139,3 +139,52 @@ export async function connect({ base, run = spawnWizard } = {}) {
 function spawnWizard(args) {
   return new Promise((resolve) => { const p = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', args, { stdio: 'inherit' }); p.on('close', resolve); p.on('error', () => resolve(127)); });
 }
+
+// ---- `trail sync --receipts`: Agent Work Receipts to the OrgX work ledger -------------------------------------------
+// Opt-in and separate from outlines, because receipts carry text: the ask, summaries, command lines, short output
+// excerpts. Everything is secret-redacted at rest already; with personal-data masking on, the free-text fields go
+// through OpenAI Privacy Filter locally before anything is sent (a failure sends nothing).
+const TEXT_FIELDS = (r) => [
+  [r.intent, 'summary'], [r.intent, 'objective'], [r.outcome, 'summary'],
+  ...(r.intent.constraints || []).map((_, i) => [r.intent.constraints, i]), ...(r.intent.acceptance_criteria || []).map((_, i) => [r.intent.acceptance_criteria, i]),
+  ...r.evidence.flatMap((e) => [[e, 'summary'], [e, 'excerpt']]), ...r.human_interventions.map((h) => [h, 'summary']),
+  ...r.actions.flatMap((a) => [[a, 'summary'], [a, 'error']]),
+].filter(([o, k]) => typeof o?.[k] === 'string' && o[k].length > 3);
+const idemKey = (id) => { const k = String(id).replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/^[^A-Za-z0-9]+/, ''); return k.length <= 160 ? k : `trail:${sha(id).slice(0, 40)}`; };
+const receiptFingerprint = (r) => sha(JSON.stringify([r.outcome, r.verification.status, r.lineage.parent_receipt_refs, r.extensions?.['org.orgx.trail/v1']?.labels])).slice(0, 16);
+
+export async function syncReceipts({ dryRun = false, base, limit = 50, since } = {}) {
+  const { ledger, withGraph } = await import('./ledger.mjs');
+  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {};
+  const L = ledger({ persist: true });
+  let todo = L.receipts.filter((r) => (!since || r.timestamps.started_at >= since)).map((r) => withGraph(r, L)).filter((r) => state.receipts[r.receipt_id] !== receiptFingerprint(r))
+    .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, limit);
+  if (piiEnabled() && todo.length) {
+    todo = JSON.parse(JSON.stringify(todo)); const slots = todo.flatMap(TEXT_FIELDS); const masked = maskPii(slots.map(([o, k]) => o[k])); slots.forEach(([o, k], i) => { o[k] = masked[i]; });
+  }
+  const root = baseUrl(base); const url = `${root}/api/v1/agent-work-receipts`;
+  const privacy = piiEnabled() ? 'receipts (secrets redacted, personal data masked)' : 'receipts (secrets redacted; personal-data masking off — trail privacy --pii on)';
+  if (dryRun) return { dryRun: true, url, privacy, receipts: todo.length, pending: L.receipts.length - Object.keys(state.receipts).length, example: todo[0] ?? null };
+  const cred = credential();
+  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
+  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` };
+  const save = () => fs.writeFileSync(SYNC_STATE, JSON.stringify(state));
+  let sent = 0, duplicate = 0; const refused = [];
+  // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
+  let batch = true;
+  for (let i = 0; i < todo.length;) {
+    const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
+    const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id) };
+    const res = await fetch(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
+    if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    const out = await res.json().catch(() => ({}));
+    if (res.status === 409 && out.error?.code === 'workspace_receipt_import_limit_reached') { refused.push({ id: chunk[0].receipt_id, error: out.error.message }); break; }
+    const results = batch ? (out.results || []) : [{ ...out, ok: res.ok }];
+    chunk.forEach((r, k) => { const x = results[k] || {}; if (x.ok) { sent++; if (x.idempotent) duplicate++; state.receipts[r.receipt_id] = receiptFingerprint(r); } else refused.push({ id: r.receipt_id, status: res.status, error: x.error?.code || out.error?.code || 'refused' }); });
+    save(); i += chunk.length;
+    if (!res.ok && !batch && res.status >= 500) break;
+  }
+  return { dryRun: false, url, credential: cred.from, receipts: sent, duplicate, refused, privacy, remaining: L.receipts.length - Object.keys(state.receipts).length };
+}

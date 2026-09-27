@@ -8,6 +8,9 @@ import { actionFor, effectText, wallId } from './actions.mjs';
 import { matchWall, PREDICATES } from './guard.mjs';
 import { wallById } from './walls.mjs';
 import { VERSION } from './store.mjs';
+import { ledger, reviewQueue } from './ledger.mjs';
+import { search, receiptDetail, workstreamDetail } from './search.mjs';
+import { tokens } from './workstreams.mjs';
 
 const TOOLS = [
   { name: 'trail_check', description: 'Before running a command or tool, check whether it matches a wall your agents have hit before in don\'t-ask/unattended runs, and get the rule that avoids it.',
@@ -16,6 +19,14 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { limit: { type: 'number' }, project: { type: 'string', description: 'Only walls seen in this repo folder name' } } } },
   { name: 'trail_threads', description: 'Search past threads of agent work (what was attempted, how it ended) across Claude Code and Codex sessions.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, status: { type: 'string', enum: ['outcome', 'abandoned', 'open', 'outcome?'] }, limit: { type: 'number' } } } },
+  { name: 'trail_search', description: 'Search every piece of agent work on this machine (one Agent Work Receipt each). Free text ranked by relevance plus filters: outcome:succeeded|partially_succeeded|blocked|failed|unknown, verification:passed|partial|failed|unverified, type:fix|feature|improve|refactor|investigate|review|ship|design|write|data|ops|research|routine, area:<name>, repo:<name>, client:<claude|codex|cursor-ide|…>, ws:<workstream id>, pr:<number>, file:<path fragment>, since:YYYY-MM-DD, until:YYYY-MM-DD, conf:<0.6 (overall confidence), unmet:any|tests|typecheck|build|pull_request|merge|deploy, status:done|done_with_gaps|blocked|dropped|open (workstream). Results say which terms matched; open one with trail_receipt.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'e.g. "receipt upload outcome:blocked repo:orgx since:2026-09-01"' }, limit: { type: 'number' } }, required: ['query'] } },
+  { name: 'trail_receipt', description: 'One piece of agent work in full: what was asked, acceptance criteria and whether each was met (with evidence), what was delivered, what checked it, how it ended, its workstream and linked work, and what trail is unsure about.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Receipt id from trail_search (a unique suffix works)' } }, required: ['id'] } },
+  { name: 'trail_workstream', description: 'A workstream: pieces of work joined across sessions by shared pull requests, branches, rarely-touched files, pasted ids and explicit continuations. Returns every member in order, the links with their evidence and confidence, unmet criteria and the rollup status. Pass an id, or a query to list matching workstreams.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' }, query: { type: 'string' }, limit: { type: 'number' } } } },
+  { name: 'trail_review', description: 'Open questions about this machine\'s agent work that the person should settle: uncertain outcomes and acceptance criteria with no evidence either way, most useful first. Read-only: the person answers with trail label.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number' }, kind: { type: 'string', enum: ['outcome', 'criterion'] } } } },
   { name: 'trail_summary', description: 'Headline numbers for this machine\'s agent work: sessions, threads, outcome rate, calls lost to known walls.',
     inputSchema: { type: 'object', properties: {} } },
 ];
@@ -44,6 +55,14 @@ function call(name, a = {}) {
     }
     return out;
   }
+  if (name === 'trail_search') return search(a.query || '', { limit: Math.min(a.limit || 20, 100) });
+  if (name === 'trail_receipt') return receiptDetail(String(a.id || '')) || { error: `No receipt matches "${a.id}". Use trail_search to find ids.` };
+  if (name === 'trail_workstream') {
+    if (a.id) return workstreamDetail(String(a.id)) || { error: `No workstream "${a.id}".` };
+    const L = ledger(); const q = tokens(a.query || '');
+    return L.built.workstreams.filter((w) => !q.length || q.some((t) => tokens(`${w.title} ${w.repo} ${w.objects.map((o) => o.key).join(' ')}`).includes(t))).slice(0, a.limit || 15).map(({ receipts, ...w }) => ({ ...w, pieces: receipts.length }));
+  }
+  if (name === 'trail_review') return reviewQueue(ledger(), { limit: 200 }).filter((x) => !a.kind || x.kind === a.kind).slice(0, a.limit || 20);
   if (name === 'trail_summary') { const T = data().K.tot; return { sessions: T.sessions, threads: T.threads, outcome_rate: +(T.outcome / T.threads).toFixed(3), dropped_rate: +(T.abandoned / T.threads).toFixed(3), calls_relearning_known_walls: T.rediscoveryCalls, checked_after_change: +(T.verified / Math.max(T.changed, 1)).toFixed(3) }; }
   throw new Error(`Unknown tool ${name}`);
 }

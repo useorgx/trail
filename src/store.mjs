@@ -7,7 +7,7 @@ import { redactDeep } from './redact.mjs';
 import { archivedOnly } from './archive.mjs';
 import { discoverCopilot, discoverGemini, discoverDroid } from './adapters-json.mjs';
 
-export const VERSION = 'trail-1.7';
+export const VERSION = 'trail-1.8';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),
@@ -50,6 +50,7 @@ export function hardenStore() {
 /** Agent Work Receipts for one session's pieces of work (src/receipt.mjs), redacted like everything stored. */
 export function writeReceipts(id, receipts) { fs.mkdirSync(P.receipts, { recursive: true, mode: DIR_MODE }); writePrivate(path.join(P.receipts, id + '.json'), JSON.stringify(redactDeep(receipts))); }
 export const loadReceipts = (id) => readJSON(path.join(P.receipts, id + '.json'), []);
+export const P_WORKSTREAMS = () => path.join(HOME, 'workstreams.json');
 export function allReceipts() { let n = []; try { n = fs.readdirSync(P.receipts); } catch { return []; } return n.filter((f) => f.endsWith('.json')).flatMap((f) => readJSON(path.join(P.receipts, f), [])); }
 export const loadLanguage = (id) => readJSON(path.join(P.language, id + '.json'), { reasoning: [], full: [] });
 export function loadSessions() {
