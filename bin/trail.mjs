@@ -69,8 +69,8 @@ else if (cmd === 'deepen') {
   // Opt-in: Jev tags each language step (paid, sends step text to OpenRouter/TypeSafe), then goals are rebuilt.
   const { deepen, readKey } = await import('../src/deepen.mjs');
   const key = readKey(val('key-file')); if (!key) { console.error('trail deepen is opt-in and needs an OpenRouter key: set OPENROUTER_API_KEY or pass --key-file <env file>.'); process.exitCode = 2; }
-  else { const r = await deepen({ key, limit: val('limit') ? +val('limit') : undefined, onProgress: (p) => process.stderr.write(`  ${p.done}/${p.total} steps · $${p.cost.toFixed(4)}\r`) });
-    console.log(`Jev tagged ${r.steps} steps in ${r.sessions} sessions ($${r.cost.toFixed(4)}${r.failed ? `, ${r.failed} failed` : ''}). Rebuilding goals…`); await scanView({ ...opts, plain: true }); }
+  else try { const r = await deepen({ key, limit: val('limit') ? +val('limit') : undefined, onProgress: (p) => process.stderr.write(`  ${p.done}/${p.total} steps · $${p.cost.toFixed(4)}\r`) });
+    console.log(`Jev tagged ${r.steps} steps and read ${r.goals} goals in ${r.sessions} sessions ($${r.cost.toFixed(4)}${r.failed + r.goalsFailed ? `, ${r.failed + r.goalsFailed} failed` : ''}). Rebuilding goals…`); await scanView({ ...opts, plain: true }); } catch (e) { console.error(e.message); process.exitCode = 1; }
 }
 else if (cmd === 'goals') {
   // Goals: one per ask, detours inside, outcome read from the steps (src/goals.mjs).

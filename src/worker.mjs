@@ -23,7 +23,7 @@ parentPort.on('message', async ({ file, client }) => {
     const lang = { reasoning: s.reasoning || [], full };
     const id = s.id || path.basename(file).replace(/\.jsonl$/, '').slice(-36);
     if (lang.reasoning.length || full.length) writeLanguage(id, lang);
-    const st = steps(s, lang); const goals = buildGoals(s, r, st);
+    const st = steps(s, lang); const goals = buildGoals(s, r, st, { sessionId: id });
     const tagCounts = {}; for (const x of st) if (x.tag) tagCounts[x.tag] = (tagCounts[x.tag] || 0) + 1;
     const sess = {
       id, client, file,
@@ -31,7 +31,7 @@ parentPort.on('message', async ({ file, client }) => {
       start: s.start, end: s.end, asks: s.ev.filter((e) => e.k === 'ask').length,
       tools: r.tools, errs: r.errs, denied: r.denied, compactions: r.compactions, steers: r.steers, walls: r.walls,
       lang: { reasoning: lang.reasoning.length, full: full.length }, tags: tagCounts,
-      goals: goals.map((g) => ({ id: g.id, root: g.root, title: g.title, origin: g.origin, threads: g.threads, episodes: g.episodes.map((e) => e.kind), spans: g.spans, outcome: g.outcome, status: g.status, backtracks: g.backtracks })),
+      goals: goals.map((g) => ({ id: g.id, root: g.root, title: g.title, origin: g.origin, threads: g.threads, episodes: g.episodes.map((e) => e.kind), spans: g.spans, outcome: g.outcome, status: g.status, backtracks: g.backtracks, conf: g.conf, ...(g.jev ? { jev: g.jev, agree: g.agree, verified: g.verified } : {}) })),
       threads: r.threads.map((t) => decide({ id: t.id, origin: t.origin, kind: t.kind, title: t.title, ask: t.ask, notes: t.notes, moves: t.moves, backs: t.backs, status: t.status, claim: t.claim, subj: t.subj, errs: t.errs, parent: t.parent, t0: t.t0, t1: t.t1, spans: t.spans || [], feat: t.feat })),
     };
     parentPort.postMessage({ ok: true, sess });

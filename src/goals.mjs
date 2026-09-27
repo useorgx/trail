@@ -2,13 +2,27 @@
 // opening), with the detours threadify splits out (recoveries, walls, discoveries, plan steps) kept inside it as
 // episodes. Outcome and backtracks are read from the steps (src/steps.mjs), and each points at the step that shows it.
 // Threads stay as they are; goals are a layer on top, so existing views and the upload contract are unchanged.
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { isShip, isVerification } from './steps.mjs';
+import { HOME } from './store.mjs';
 
+// Jev's independent read of each goal's outcome, from `trail deepen` (opt-in). When it agrees with the steps, the
+// call is trusted; when it disagrees, the goal is marked unsure. Keyed by session, root thread and the goal's spans.
+export const GOAL_JEV = path.join(HOME, 'goals-jev.json');
+export const goalKey = (sessionId, g) => `${sessionId}:${g.root}:${crypto.createHash('sha1').update(JSON.stringify(g.spans)).digest('hex').slice(0, 10)}`;
+let JEVG;
+const jevGoal = (k) => { if (JEVG === undefined) { try { JEVG = JSON.parse(fs.readFileSync(GOAL_JEV, 'utf8')); } catch { JEVG = null; } } return JEVG?.[k]; };
+
+// How sure each outcome is, from the strength of the evidence behind it. Used to answer or abstain: a caller
+// that wants to be right on everything it answers skips calls below its threshold and says "unsure" instead.
+const OUTCOME_CONF = { shipped_checked: 0.95, shipped_unchecked: 0.85, verified_change: 0.85, blocked_reported: 0.8, blocked_wall: 0.8, handed_back: 0.75, open: 0.7, answered: 0.6, reported_change: 0.6, abandoned: 0.55, unclear: 0.2 };
 // Outcome of the goal, mapped onto the v1 codebook status for scoring against existing labels.
 export const OUTCOME_STATUS = { shipped_checked: 'done', shipped_unchecked: 'done', verified_change: 'done', reported_change: 'done', answered: 'done', handed_back: 'parked', blocked_reported: 'parked', blocked_wall: 'dropped', abandoned: 'dropped', open: 'open', unclear: 'unclear' };
 
 /** @param {{ev:any[]}} s session · @param {{threads:any[]}} r threadify result · @param {any[]} st steps(s, lang) */
-export function buildGoals(s, r, st) {
+export function buildGoals(s, r, st, { sessionId } = {}) {
   const byId = new Map(r.threads.map((t) => [t.id, t]));
   const rootOf = (t, seen = new Set()) => {
     if (seen.has(t.id)) return t; seen.add(t.id);
@@ -33,6 +47,18 @@ export function buildGoals(s, r, st) {
     g.outcome = outcome(mine, last === lastEvent);
     g.status = OUTCOME_STATUS[g.outcome.kind];
     g.backtracks = backtracks(mine);
+    // Confidence per call. Outcome: its evidence kind, raised when Jev tagged the deciding message with confidence.
+    const decider = mine.find((x) => x.at === g.outcome.at && x.kind === 'say');
+    const talk = mine.filter((x) => x.kind === 'say' || x.kind === 'think').length;
+    g.conf = {
+      outcome: +Math.min(0.98, OUTCOME_CONF[g.outcome.kind] + (decider?.by === 'jev' && decider.tag === decider.rule ? 0.1 : 0)).toFixed(2), // replaced below when Jev has read the goal
+      boundary: g.episodes.length === 0 ? 0.9 : g.episodes.every((e) => e.kind === 'recovery' || e.kind === 'wall') ? 0.85 : 0.7,
+      backtracks: g.backtracks.length ? Math.max(...g.backtracks.map((b) => (b.seen === 'both' ? 0.9 : b.seen === 'jev' ? 0.75 : 0.6))) : talk >= 3 ? 0.7 : 0.5,
+    };
+    // Two independent reads: the steps and Jev. Agreement is the strongest signal we have that a call is right
+    // (lab, vs Codex labels: agree 79-82% right; agree with Jev >= 0.8 sure, 92-100% on ~13% of goals).
+    const j = sessionId && jevGoal(goalKey(sessionId, g));
+    if (j) { g.jev = { status: j[0], conf: j[1] }; g.agree = j[0] === g.status; g.conf.outcome = g.agree ? (j[1] >= 0.8 ? 0.97 : 0.85) : 0.35; g.verified = g.agree && j[1] >= 0.8; }
     delete g.own;
   }
   return list;
@@ -62,14 +88,15 @@ function outcome(mine, endsSession) {
 }
 
 // A backtrack is a course change in the agent's words or reasoning. Its trigger is what came just before it.
+// Rules and Jev see different ones (Jev is more precise, the rules catch more), so either counts; `seen` records which.
 function backtracks(mine) {
   const out = [];
   mine.forEach((x, k) => {
-    if (x.tag !== 'course_change') return;
+    if (x.tag !== 'course_change' && x.rule !== 'course_change') return;
     const before = mine.slice(Math.max(0, k - 4), k);
     const trigger = before.some((b) => b.kind === 'tool' && (b.result === 'fail' || b.result === 'denied')) ? 'error' : before.some((b) => b.kind === 'ask') ? 'person' : x.kind === 'think' ? 'reasoning' : 'evidence';
     if (out.length && x.at - out[out.length - 1].at <= 2) return; // one change of course, not every sentence about it
-    out.push({ at: x.at, trigger, by: x.kind });
+    out.push({ at: x.at, trigger, by: x.kind, seen: x.tag === x.rule ? 'both' : x.tag === 'course_change' ? x.by : 'rule' });
   });
   return out;
 }

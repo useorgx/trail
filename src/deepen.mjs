@@ -8,6 +8,16 @@ import crypto from 'node:crypto';
 import { HOME, loadSessions, loadLanguage, loadIndex, saveIndex } from './store.mjs';
 import { readSession } from './clients.mjs';
 import { steps, TAGS } from './steps.mjs';
+import { threadify } from './classify.mjs';
+import { buildGoals, GOAL_JEV, goalKey } from './goals.mjs';
+import { renderEvidence } from './evidence.mjs';
+
+const OUTCOME = { type: 'choice', instructions: 'How did this piece of AI coding agent work end, as far as the log shows? Lines marked ~ belong to other work, shown for context.', criteria: {
+  done: 'Delivered: a ship (commit, PR, merge, deploy, publish), a check that passed after the change, or an answer that satisfies the ask.',
+  dropped: 'The agent stopped without delivering: gave up, was blocked, or moved on and never came back.',
+  parked: 'Explicitly left for later or waiting on the person.',
+  open: 'The session transcript ends while this work is still in progress.',
+  unclear: 'The log genuinely cannot tell.' } };
 
 export const JEV_CACHE = path.join(HOME, 'steptags-jev.json');
 export const textKey = (text) => crypto.createHash('sha1').update(String(text)).digest('hex').slice(0, 16);
@@ -17,6 +27,15 @@ const DEF = {
   course_change: 'Drops an approach, belief or plan for a different one.', verification: 'Reports that a check passed or confirms the result works.',
   claim_done: 'Says the work is finished, shipped or delivered.', handback: 'Asks the person for a decision, approval or action.',
   blocked: 'Says it cannot proceed (refused, unavailable, stuck).', other: 'None of these.' };
+
+// Out of credits is not a per-step failure: stop at once and say so, instead of counting every step as failed.
+export class OutOfCredits extends Error {}
+async function jev(key, body) {
+  const r = await fetch('https://openrouter.ai/api/alpha/decisions', { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'typesafe/jev-1.13', ...body }) });
+  if (r.status === 402) throw new OutOfCredits('The OpenRouter account behind this key is out of credits (402). Add credits at https://openrouter.ai/settings/credits, then run trail deepen again; finished work is cached.');
+  if (!r.ok) throw new Error(String(r.status));
+  return r.json();
+}
 
 export function readKey(keyFile) {
   if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY.trim();
@@ -36,17 +55,34 @@ export async function deepen(o) {
       const k = textKey(x.text); if (cache[k]) continue; todo.push({ k, kind: x.kind, text: x.text.slice(0, 4000), file: s.file }); touched.add(s.file);
     }
   }
-  const seen = new Set(); const queue = todo.filter((t) => !seen.has(t.k) && seen.add(t.k)); const total = queue.length; let cost = 0, done = 0, failed = 0;
+  let stop = null; const seen = new Set(); const queue = todo.filter((t) => !seen.has(t.k) && seen.add(t.k)); const total = queue.length; let cost = 0, done = 0, failed = 0;
   await Promise.all(Array.from({ length: o.par || 8 }, async () => { while (queue.length) { const t = queue.shift();
     try {
-      const r = await fetch('https://openrouter.ai/api/alpha/decisions', { method: 'POST', headers: { authorization: `Bearer ${o.key}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'typesafe/jev-1.13', state: { kind: t.kind === 'think' ? 'reasoning' : 'message', step: t.text }, questions: { tag: { type: 'choice', instructions: 'What is this step of an AI coding agent\'s work doing? If several, the one that matters most for how the work went.', criteria: DEF } } }) });
-      if (!r.ok) throw new Error(String(r.status)); const d = await r.json(); cost += d.usage?.cost || 0;
+      const d = await jev(o.key, { state: { kind: t.kind === 'think' ? 'reasoning' : 'message', step: t.text }, questions: { tag: { type: 'choice', instructions: 'What is this step of an AI coding agent\'s work doing? If several, the one that matters most for how the work went.', criteria: DEF } } }); cost += d.usage?.cost || 0;
       if (TAGS.includes(d.answers?.tag?.choice)) cache[t.k] = [d.answers.tag.choice, +(d.answers.tag.confidence ?? 0).toFixed(2)];
-    } catch { failed++; }
+    } catch (e) { if (e instanceof OutOfCredits) { stop = e; queue.length = 0; } else failed++; }
     if (++done % 200 === 0) { fs.writeFileSync(JEV_CACHE, JSON.stringify(cache)); o.onProgress?.({ done, total, cost }); } } }));
   fs.writeFileSync(JEV_CACHE, JSON.stringify(cache));
+  if (stop) { const index = loadIndex(); for (const f of touched) delete index.files[f]; saveIndex(index); throw stop; }
+  // Second pass: Jev reads each goal's evidence and says how it ended, independently of the steps. Agreement between
+  // the two is what marks an outcome as verified (src/goals.mjs).
+  let gcache = {}; try { gcache = JSON.parse(fs.readFileSync(GOAL_JEV, 'utf8')); } catch {}
+  const gq = [];
+  for (const s of pick) {
+    const ev = await readSession(s.file, s.client); const r = threadify(ev); const lang = loadLanguage(s.id);
+    for (const g of buildGoals(ev, r, steps(ev, lang.reasoning.length ? lang : { reasoning: ev.reasoning || [] }), { sessionId: s.id })) {
+      const k = goalKey(s.id, g); if (gcache[k]) continue; gq.push({ k, file: s.file, evidence: renderEvidence(ev, g.spans, 16000, null), client: s.client, project: s.project });
+    }
+  }
+  const goalsTotal = gq.length; let goalsFailed = 0;
+  await Promise.all(Array.from({ length: o.par || 8 }, async () => { while (gq.length) { const t = gq.shift();
+    try {
+      const d = await jev(o.key, { state: { client: t.client, repo: t.project, evidence: t.evidence }, questions: { outcome: OUTCOME } }); cost += d.usage?.cost || 0;
+      gcache[t.k] = [d.answers.outcome.choice, +(d.answers.outcome.confidence ?? 0).toFixed(2)]; touched.add(t.file);
+    } catch (e) { if (e instanceof OutOfCredits) { stop = e; gq.length = 0; } else goalsFailed++; } } }));
+  fs.writeFileSync(GOAL_JEV, JSON.stringify(gcache));
+  if (stop) { const index = loadIndex(); for (const f of touched) delete index.files[f]; saveIndex(index); throw stop; }
   // Sessions whose steps changed are re-read on the next scan so their goals use the new tags.
   const index = loadIndex(); for (const f of touched) delete index.files[f]; saveIndex(index);
-  return { steps: total, failed, cost, sessions: touched.size };
+  return { steps: total, failed, goals: goalsTotal, goalsFailed, cost, sessions: touched.size };
 }

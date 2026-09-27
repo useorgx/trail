@@ -40,13 +40,13 @@ for (const it of items) {
     // The goal layer: the goal that owns the anchor event, its outcome and backtracks from the steps.
     if (!fs.existsSync(it.file)) { pred.set(it.key, null); continue; }
     let r = sessCache.get(it.file);
-    if (!r) { const s = await readSession(it.file, it.client); r = threadify(s); r.threads.forEach(decide); r.goals = buildGoals(s, r, steps(s, { reasoning: s.reasoning || [], full: [] })); sessCache.set(it.file, r); }
+    if (!r) { const s = await readSession(it.file, it.client); r = threadify(s); r.threads.forEach(decide); r.goals = buildGoals(s, r, steps(s, { reasoning: s.reasoning || [], full: [] }), { sessionId: it.sid }); sessCache.set(it.file, r); }
     const g = r.goals.find((x) => x.spans.some(([a, b]) => it.anchor >= a && it.anchor <= b)); if (!g) { pred.set(it.key, null); continue; }
     const t = r.threads.find((x) => x.id === g.root);
     const own = new Set(); for (const [a, b] of it.spans) for (let i = a; i <= b; i++) own.add(i);
     const gs = new Set(); for (const [a, b] of g.spans) for (let i = a; i <= b; i++) gs.add(i);
     const inter = [...own].filter((i) => gs.has(i)).length;
-    pred.set(it.key, { origin: toCodebook(t).origin, status: g.status, outcome: g.outcome.kind, backtracks: g.backtracks.length, merged: gs.size > own.size && inter >= own.size * 0.9, same: inter / Math.max(1, new Set([...own, ...gs]).size) >= 0.9 });
+    pred.set(it.key, { origin: toCodebook(t).origin, status: g.status, outcome: g.outcome.kind, backtracks: g.backtracks.length, conf: g.conf, merged: gs.size > own.size && inter >= own.size * 0.9, same: inter / Math.max(1, new Set([...own, ...gs]).size) >= 0.9 });
   } else if (labeler.startsWith('model:')) {
     try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status, ...(m.boundary ? { boundary: m.boundary } : {}), ...(m.backtracked != null ? { backtracks: m.backtracked >= 0.5 ? 1 : 0 } : {}), conf: m.conf }); } catch { pred.set(it.key, null); }
   } else if (labeler.startsWith('jury:')) {
@@ -78,6 +78,21 @@ if (labeler === 'goals') {
   res.boundary = { acc: +((fixed + kept) / Math.max(small.length + right.length, 1)).toFixed(4), too_small_fixed: `${fixed}/${small.length}`, right_kept: `${kept}/${right.length}` };
   const rs = right.filter((it) => gold.get(it.key).status); res.status_on_right = +(rs.filter((it) => pred.get(it.key).status === gold.get(it.key).status).length / Math.max(rs.length, 1)).toFixed(4);
   const oc = {}; for (const it of items) { const k = pred.get(it.key).outcome; oc[k] = (oc[k] || 0) + 1; } res.outcomes = oc;
+  // Answer or abstain: sort calls by confidence and report accuracy at each coverage, plus the widest coverage
+  // that stays at 100% and at 95%. "100% on what it answers" is the honest form of the goal.
+  const curve = (pairs) => {
+    // One point per distinct confidence threshold: answer the calls at or above it, abstain on the rest.
+    const ts = [...new Set(pairs.map((p) => p.c))].sort((a, b) => b - a);
+    const pts = ts.map((t) => { const a = pairs.filter((p) => p.c >= t); return { c: t, cov: a.length / pairs.length, acc: a.filter((p) => p.ok).length / a.length }; });
+    const widest = (x) => pts.filter((p) => p.acc >= x).sort((a, b) => b.cov - a.cov)[0] || null;
+    return { n: pairs.length, at100: widest(1), at95: widest(0.95), at90: widest(0.9), points: pts };
+  };
+  const g = (it) => gold.get(it.key), P = (it) => pred.get(it.key);
+  res.abstain = {
+    status: curve(right.filter((it) => g(it).status).map((it) => ({ c: P(it).conf.outcome, ok: +(P(it).status === g(it).status) }))),
+    boundary: curve([...small, ...right].map((it) => ({ c: P(it).conf.boundary, ok: +(g(it).boundary === 'too_small' ? P(it).merged : P(it).same) }))),
+    backtracks: curve(items.filter((it) => g(it).backtracks != null).map((it) => ({ c: P(it).conf.backtracks, ok: +((P(it).backtracks > 0) === (g(it).backtracks !== '0')) }))),
+  };
 }
 if (labeler === 'trail') res.boundary = { acc: +(items.filter((it) => gold.get(it.key).boundary === 'right' && pred.get(it.key)?.boundaryStable).length / items.length).toFixed(4), note: 'share of threads you judged "right" whose spans the current classifier still reproduces' };
 // Your own consistency: labels you gave twice without knowing.
@@ -89,6 +104,7 @@ appendJSONL(L.experiments, row);
 if (!quiet) {
   console.log(`\n${labeler} on ${which} vs ${goldFrom === 'human' ? 'your labels' : goldFrom + ' labels (silver, not your judgment)'} (${items.length} of ${allN} threads labeled by it) — code ${row.code.sha}${row.code.dirty ? '+dirty' : ''}`);
   for (const f of [...fields, ...(labeler === 'trail' || labeler === 'goals' ? ['boundary'] : [])]) console.log(`  ${f.padEnd(9)} ${(res[f].acc * 100).toFixed(1)}%${res[f].too_small_fixed ? `  (too small fixed ${res[f].too_small_fixed}, right kept ${res[f].right_kept})` : ''}`);
+  if (res.abstain) for (const [f, c] of Object.entries(res.abstain)) { const fmt = (p) => (p ? `${Math.round(p.cov * 100)}% of calls (conf ≥ ${p.c})` : 'none'); console.log(`  answer-or-abstain ${f.padEnd(10)} 100% right on ${fmt(c.at100)} · 95% on ${fmt(c.at95)} · 90% on ${fmt(c.at90)}  (n ${c.n})`); }
   if (res.status_on_right != null) console.log(`  status on threads labeled "right" ${(res.status_on_right * 100).toFixed(1)}% · outcomes ${JSON.stringify(res.outcomes)}`);
   if (res.backtracks) console.log(`  backtracks precision ${(res.backtracks.precision * 100).toFixed(0)}% · recall ${(res.backtracks.recall * 100).toFixed(0)}% (${res.backtracks.n} threads)`);
   if (res.self) console.log(`  ${goldFrom === 'human' ? 'your own' : goldFrom + '’s'} consistency on ${res.selfN} repeats: origin ${res.self.origin * 100}% · status ${res.self.status * 100}% · boundary ${res.self.boundary * 100}%`);

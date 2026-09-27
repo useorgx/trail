@@ -84,11 +84,13 @@ function jevTag(text) {
 }
 /** One act tag for a language step. kind: 'ask' (the person), 'say' (agent message) or 'think' (reasoning). */
 export function tagStep(text, kind) {
-  if (kind === 'ask') return { tag: 'ask', conf: 1, by: 'rule' };
-  const j = jevTag(text); if (j) return { tag: j[0], conf: j[1], by: 'jev' };
+  if (kind === 'ask') return { tag: 'ask', conf: 1, by: 'rule', rule: 'ask' };
+  // `rule` is always kept beside the chosen tag, so goals can combine what the rules and Jev each saw.
+  const rule = rulesTag(text);
+  const j = jevTag(text); if (j) return { tag: j[0], conf: j[1], by: 'jev', rule };
   const m = model();
-  if (m) { const [[tag, conf]] = scoreTags(m, featurize(text, kind)); return { tag, conf: +conf.toFixed(3), by: 'model' }; }
-  const tag = rulesTag(text); return { tag, conf: tag === 'other' ? 0.5 : 0.7, by: 'rule' };
+  if (m) { const [[tag, conf]] = scoreTags(m, featurize(text, kind)); return { tag, conf: +conf.toFixed(3), by: 'model', rule }; }
+  return { tag: rule, conf: rule === 'other' ? 0.5 : 0.7, by: 'rule', rule };
 }
 
 /**
