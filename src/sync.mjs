@@ -10,6 +10,7 @@ import { loadSessions, loadAdoptions, HOME, VERSION } from './store.mjs';
 import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
 import { wallById } from './walls.mjs';
+import { piiEnabled, maskPii } from './pii.mjs';
 
 const SYNC_STATE = path.join(HOME, 'sync.json');
 const CHUNK = 200;
@@ -79,7 +80,14 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
   const bounded = !!withTitles;
   const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })();
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
-  const todo = limit ? sessions.slice(-limit) : sessions;
+  let todo = limit ? sessions.slice(-limit) : sessions;
+  // Titles are the only text a bounded upload carries: with personal-data masking on, they go through
+  // OpenAI Privacy Filter locally first (throws = nothing sent).
+  if (bounded && piiEnabled()) {
+    const titles = todo.flatMap((s) => s.threads.map((t) => t.title || ''));
+    const masked = maskPii(titles); let k = 0;
+    todo = todo.map((s) => ({ ...s, threads: s.threads.map((t) => ({ ...t, title: masked[k++] })) }));
+  }
   // Each adopted fix travels with its measured effect (same scope, same mode; confounded ones say so). Counts only.
   const allSessions = loadSessions(); const K = corpus(allSessions, loadAdoptions());
   const adoptions = loadAdoptions().map((a) => {

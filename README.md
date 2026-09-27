@@ -77,6 +77,16 @@ Trail is built on other people's ideas. None of them endorse it; this is what we
 | [Portable Game Notation (PGN)](https://en.wikipedia.org/wiki/Portable_Game_Notation) · Steven J. Edwards, 1993 | Each thread is a move string (probe, run, change, check, ship, failed, denied) you can read at a glance and compare. |
 | [Stigmergy: coordination through traces left in the environment](https://pubmed.ncbi.nlm.nih.gov/10633572/) · Pierre-Paul Grassé, 1959 | A wall one session hit becomes a trace the next session reads before it starts, instead of every session starting from zero. |
 
+## Privacy
+
+`trail privacy` shows what trail keeps, where, who can read it, and what each command sends, counted from the files.
+Secrets are removed before anything is stored or sent, using gitleaks' 221 provider rules (plus OrgX and OpenRouter keys);
+trail's folder is readable by you only. Nothing leaves the machine unless you run `trail sync` (counts and move strings;
+`--with-titles` adds titles) or `trail deepen` (after a quote you confirm). For names, emails, phones and addresses too,
+`trail privacy --pii on` masks outgoing text locally with [OpenAI Privacy Filter](https://github.com/openai/privacy-filter).
+
+Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDays`); trail keeps its own outlines after that.
+
 ## Data
 
 Everything lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.

@@ -15,6 +15,7 @@ import { buildGoals, GOAL_JEV, goalKey } from './goals.mjs';
 import { renderEvidence } from './evidence.mjs';
 import { credential, baseUrl } from './sync.mjs';
 import { redact } from './redact.mjs';
+import { piiEnabled, maskPii } from './pii.mjs';
 
 export const JEV_CACHE = path.join(HOME, 'steptags-jev.json');
 export const textKey = (text) => crypto.createHash('sha1').update(String(text)).digest('hex').slice(0, 16);
@@ -117,6 +118,11 @@ export async function deepen(o) {
     if (!q.configured) throw new Error('Paid deepen is not turned on for this OrgX server yet.');
     if (!(await (o.confirm ? o.confirm(q) : false))) return { ...counts, cancelled: true, quote: q };
     if (!q.enough) throw new OutOfCredits(`This run needs ${q.credits} credits and you have ${q.available}. Buy a pack at ${baseUrl()}${q.buy_url}, then run trail deepen again.`);
+  }
+  // Opt-in: personal data masked locally with OpenAI Privacy Filter before anything is sent (throws = nothing sent).
+  if (piiEnabled()) {
+    const all = [...stepItems.values(), ...goalItems];
+    for (let i = 0; i < all.length; i += 500) { const chunk = all.slice(i, i + 500); const masked = maskPii(chunk.map((x) => x.text ?? x.evidence)); chunk.forEach((x, k) => { if ('text' in x) x.text = masked[k]; else x.evidence = masked[k]; }); }
   }
   const touched = new Set(); let done = 0; const total = counts.steps + counts.goals;
   const save = () => { fs.writeFileSync(JEV_CACHE, JSON.stringify(cache)); fs.writeFileSync(GOAL_JEV, JSON.stringify(gcache)); };

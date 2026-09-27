@@ -252,13 +252,27 @@ test('deepen via OrgX credits: quotes from counts, sends nothing if declined, st
 
 test('secrets are redacted before anything is stored, and stored files are private', async () => {
   const { redact } = await import('../src/redact.mjs');
-  const fake = 'sk-or-v1-' + 'a'.repeat(40);
-  assert.equal(redact(`curl -H "Authorization: Bearer ${'b'.repeat(40)}" and key ${fake}`).includes('a'.repeat(20)), false);
-  assert.match(redact(`OPENROUTER_API_KEY=${'c'.repeat(30)}`), /OPENROUTER_API_KEY=\[redacted\]/);
+  // Realistic shapes: gitleaks rightly ignores low-entropy strings like 'aaaa…', so test keys must look real.
+  const fake = 'sk-or-v1-' + '3f9a0c7e1b52d846'.repeat(4); const bearer = 'Qm8xZ2VhY2Jk' + 'N3RrLW9yZ3gtdGVzdA';
+  const out = redact(`curl -H "Authorization: Bearer ${bearer}" and key ${fake}`);
+  assert.equal(out.includes(fake) || out.includes(bearer), false);
+  assert.match(redact('OPENROUTER_API_KEY=' + 'aZ9kQ2xP7mW4'.repeat(3)), /OPENROUTER_API_KEY=\[redacted:/);
   assert.equal(redact('the task-runner and desk-chair stay'), 'the task-runner and desk-chair stay', 'ordinary words are untouched');
   const { writeSession, P } = await import('../src/store.mjs');
   writeSession({ id: 'redact-test', threads: [{ ask: `use ${fake} please` }] });
   const f = path.join(P.sessions, 'redact-test.json');
   assert.equal(fs.readFileSync(f, 'utf8').includes(fake), false);
   assert.equal(fs.statSync(f).mode & 0o077, 0, 'readable by the owner only');
+});
+
+test('personal-data masking: Privacy Filter output is split back per item, and any failure means nothing is sent', async () => {
+  const { maskPii, PiiError } = await import('../src/pii.mjs');
+  // A stand-in for `opf -f file`: prints one pretty-printed JSON object whose redacted_text masks "Alice".
+  const bin = path.join(tmp, 'fake-opf.mjs');
+  fs.writeFileSync(bin, `#!/usr/bin/env node\nconst fs=require('fs');const f=process.argv[process.argv.indexOf('-f')+1];const t=fs.readFileSync(f,'utf8');\nif(t.includes('FAIL'))process.exit(3);\nconsole.log(JSON.stringify({schema_version:1,text:t,redacted_text:t.replace(/Alice/g,'<PRIVATE_PERSON>')},null,2));\n`.replace('require', 'require'));
+  fs.writeFileSync(bin.replace('.mjs', '.cjs'), fs.readFileSync(bin, 'utf8')); fs.chmodSync(bin.replace('.mjs', '.cjs'), 0o755);
+  const out = maskPii(['ask Alice about it', 'no names here', 'Alice again\nwith a second line'], { bin: bin.replace('.mjs', '.cjs') });
+  assert.deepEqual(out, ['ask <PRIVATE_PERSON> about it', 'no names here', '<PRIVATE_PERSON> again\nwith a second line']);
+  assert.throws(() => maskPii(['FAIL'], { bin: bin.replace('.mjs', '.cjs') }), PiiError);
+  assert.throws(() => maskPii(['x'], { bin: null }), (e) => e instanceof PiiError && /Nothing was sent/.test(e.message));
 });

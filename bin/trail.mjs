@@ -50,6 +50,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
   trail share <id>   a public page for a fix, measured across everyone who adopted it (--copy)
   trail card         your trail as a shareable image + post text   (--copy · --open)
+  trail privacy      what trail keeps, where, who can read it, and what each command sends   (--pii on|off)
   trail credits      the people whose work trail is built on, and where each idea lives in trail
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
   trail guard        prevention: stop known walls before they happen   (install | uninstall | status)
@@ -162,6 +163,10 @@ else if (cmd === 'share') {
     else console.log(`  Your result: ${r.effect.text}\n  It reaches the page with your next \`trail sync\` (counts only).`);
     if (flag('copy')) console.log(copy(r.text) ? '  Copied the post text.' : `\n${r.text}`); else console.log(`\n${r.text}\n\n  (--copy puts this on your clipboard)`);
   }
+}
+else if (cmd === 'privacy') {
+  if (val('pii')) { const { setPii, opfPath } = await import('../src/pii.mjs'); const on = val('pii') === 'on'; setPii(on); console.log(on ? `Personal-data masking is on.${opfPath() ? '' : ' Install OpenAI Privacy Filter first: pip install git+https://github.com/openai/privacy-filter (until then, sync --with-titles and deepen will refuse to send).'}` : 'Personal-data masking is off.'); }
+  else { const { privacyText, privacyReport } = await import('../src/privacy.mjs'); console.log(flag('json') ? JSON.stringify(privacyReport(), null, 1) : '\n' + privacyText(palette(opts.plain)) + '\n'); }
 }
 else if (cmd === 'credits') console.log('\n' + creditsText(palette(opts.plain)));
 else if (cmd === 'card') {

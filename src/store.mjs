@@ -5,7 +5,7 @@ import path from 'node:path';
 import { discoverOpenCode, discoverCursor } from './adapters-sqlite.mjs';
 import { redactDeep } from './redact.mjs';
 
-export const VERSION = 'trail-1.1';
+export const VERSION = 'trail-1.2';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),
