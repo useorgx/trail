@@ -13,6 +13,9 @@ sample → jury → you label → eval (dev) → error analysis → one change �
    and freezes the evidence you'll see (`~/.orgx/trail/lab/evidence/`).
 2. **Jury** `node lab/jury.mjs` has Haiku, Sonnet and Opus label every thread against `codebook.md`, citing event numbers.
    The jury proposes. It is never gold.
+   **Depth gold set:** `node lab/sample.mjs --depth --n 100` draws Claude Code and Codex threads balanced on readable
+   reasoning and on trail-detected backtracks. Its evidence interleaves the agent's reasoning (`[r]` lines) and shows
+   full messages, and the bench asks one more question: how many real backtracks (keys 5–8 for 0 / 1 / 2 / 3+).
 3. **Label** `node lab/serve.mjs` opens the bench: keyboard-only, jury majority prefilled, about 1 in 10 items a
    hidden blind repeat of something you already labeled.
 4. **Eval** `node lab/eval.mjs --labeler trail` scores any labeler on dev. `--labeler jury:opus|jury:sonnet|jury:haiku|jury:majority`

@@ -9,7 +9,7 @@ header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:
 .meta{color:var(--mid)}.bar{flex:1;min-width:120px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--lime)}
 main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(360px,1fr);min-height:0}
 #ev{overflow:auto;padding:14px 16px;font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word;border-right:1px solid var(--line)}
-#ev .ctx{color:var(--dim)}#ev .person{color:var(--lime)}#ev .agent{color:var(--ink)}#ev .tool{color:var(--mid)}#ev .bad{color:var(--coral)}
+#ev .ctx{color:var(--dim)}#ev .person{color:var(--lime)}#ev .agent{color:var(--ink)}#ev .tool{color:var(--mid)}#ev .bad{color:var(--coral)}#ev .reason{color:var(--iris);padding-left:1.5em}
 aside{overflow:auto;padding:14px 16px;display:grid;gap:14px;align-content:start}
 h2{margin:0 0 6px;font:500 11px/1 ui-monospace,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
 .opts{display:flex;flex-wrap:wrap;gap:6px}
@@ -32,6 +32,7 @@ table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;p
   <div><h2>Boundary · is this one thread?</h2><div class="opts" id="boundary"></div></div>
   <div><h2>Origin</h2><div class="opts" id="origin"></div></div>
   <div><h2>Status</h2><div class="opts" id="status"></div></div>
+  <div id="btBox" hidden><h2>Backtracks · real changes of approach</h2><div class="opts" id="backtracks"></div><div class="hint">Count times the agent dropped an approach, hypothesis or plan for a different one, with or without an error first. A retry of the same thing is not a backtrack. <span class="agent">[r]</span> lines are its reasoning.</div></div>
   <div><h2>Title <span class="hint">(t toggles “ok”)</span></h2><div class="opts" id="titleok"></div><input type="text" id="title" placeholder="better title, if not ok" aria-label="Better title"></div>
   <div><h2>Note <span class="hint">(optional — why, or what the codebook is missing)</span></h2><textarea id="note" rows="2" aria-label="Note"></textarea></div>
   <button class="save" id="save">Save and next ⏎</button>
@@ -39,13 +40,13 @@ table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;p
 </aside></main>
 <script>
 const K = new URLSearchParams(location.search).get('k');
-const F = { boundary: [['right','1'],['too_big','2'],['too_small','3'],['not_a_thread','4']], origin: [['asked','a'],['plan','p'],['found','f'],['recovery','r'],['wall','w'],['scheduled','s']], status: [['done','d'],['dropped','x'],['parked','k'],['open','o'],['unclear','u']], titleok: [['ok','t'],['rename','']] };
+const F = { boundary: [['right','1'],['too_big','2'],['too_small','3'],['not_a_thread','4']], origin: [['asked','a'],['plan','p'],['found','f'],['recovery','r'],['wall','w'],['scheduled','s']], status: [['done','d'],['dropped','x'],['parked','k'],['open','o'],['unclear','u']], titleok: [['ok','t'],['rename','']], backtracks: [['0','5'],['1','6'],['2','7'],['3+','8']] };
 let cur = null, sel = {}, t0 = 0;
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 function buttons() { for (const [f, opts] of Object.entries(F)) document.getElementById(f).innerHTML = opts.map(([v, k]) => `<button class="opt" data-f="${f}" data-v="${v}" aria-pressed="${sel[f] === v}">${k ? `<kbd>${k}</kbd>` : ''}${v.replace('_', ' ')}</button>`).join(''); }
 document.addEventListener('click', (e) => { const b = e.target.closest('.opt'); if (!b) return; sel[b.dataset.f] = b.dataset.v; buttons(); });
 function renderEvidence(t) {
-  return t.split('\n').map((l) => { const ctx = /^\[\d+\]~/.test(l); const cls = ctx ? 'ctx' : /PERSON/.test(l.slice(0, 30)) ? 'person' : /AGENT:/.test(l.slice(0, 30)) ? 'agent' : /DENIED|FAILED/.test(l) ? 'bad' : 'tool'; return `<div class="${cls}">${esc(l)}</div>`; }).join('');
+  return t.split('\n').map((l) => { const ctx = /^\[\d+\]~/.test(l); const cls = ctx ? 'ctx' : /^\[r\] REASONING/.test(l) ? 'reason' : /PERSON/.test(l.slice(0, 30)) ? 'person' : /AGENT:/.test(l.slice(0, 30)) ? 'agent' : /DENIED|FAILED/.test(l) ? 'bad' : 'tool'; return `<div class="${cls}">${esc(l)}</div>`; }).join('');
 }
 async function load() {
   cur = await fetch('next?k=' + K).then((r) => r.json());
@@ -55,6 +56,7 @@ async function load() {
   document.getElementById('where').innerHTML = `${esc(cur.project)} · ${cur.client} · ${new Date(cur.start).toLocaleDateString()} ${cur.repeat ? '<span class="tag rep">blind</span>' : cur.blind ? '<span class="tag">blind</span>' : ''}`;
   document.getElementById('ev').innerHTML = renderEvidence(cur.evidence); document.getElementById('ev').scrollTop = 0;
   sel = cur.prefill ? { boundary: cur.prefill.boundary, origin: cur.prefill.origin, status: cur.prefill.status, titleok: 'ok' } : { titleok: 'ok' };
+  document.getElementById('btBox').hidden = !cur.depth;
   document.getElementById('title').value = cur.prefill?.title || cur.pred?.title || ''; document.getElementById('note').value = '';
   buttons();
   const agree = (f) => { const vs = cur.jury.map((j) => j[f]); return vs.every((v) => v === vs[0]) ? 'agree' : 'split'; };
@@ -62,9 +64,9 @@ async function load() {
   t0 = Date.now();
 }
 async function save() {
-  if (!sel.boundary || !sel.origin || !sel.status) { document.getElementById('save').textContent = 'Pick boundary, origin and status'; setTimeout(() => (document.getElementById('save').textContent = 'Save and next ⏎'), 1200); return; }
+  if (!sel.boundary || !sel.origin || !sel.status || (cur.depth && !sel.backtracks)) { document.getElementById('save').textContent = cur.depth ? 'Pick boundary, origin, status and backtracks' : 'Pick boundary, origin and status'; setTimeout(() => (document.getElementById('save').textContent = 'Save and next ⏎'), 1200); return; }
   const title = document.getElementById('title').value;
-  await fetch('label?k=' + K, { method: 'POST', body: JSON.stringify({ key: cur.key, boundary: sel.boundary, origin: sel.origin, status: sel.status, title_ok: sel.titleok === 'ok', title, note: document.getElementById('note').value, repeat: cur.repeat, blind: cur.blind, prefill: cur.prefill, seconds: (Date.now() - t0) / 1000 }) });
+  await fetch('label?k=' + K, { method: 'POST', body: JSON.stringify({ key: cur.key, boundary: sel.boundary, origin: sel.origin, status: sel.status, title_ok: sel.titleok === 'ok', title, note: document.getElementById('note').value, backtracks: cur.depth ? sel.backtracks : undefined, repeat: cur.repeat, blind: cur.blind, prefill: cur.prefill, seconds: (Date.now() - t0) / 1000 }) });
   load();
 }
 document.getElementById('save').onclick = save;

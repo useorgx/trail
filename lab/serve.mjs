@@ -21,7 +21,8 @@ function next() {
   const items = allBatchItems(); const { gold, repeats, all } = goldByKey();
   // Most informative first: threads where the jury splits, then the rest. Unanimous items go fast with the prefill.
   const split = (i) => { const j = jury(i); if (j.length < 2) return 0; return ['boundary', 'origin', 'status'].reduce((a, f) => a + (new Set(j.map((x) => x[f])).size - 1), 0); };
-  const fresh = items.filter((i) => !gold.has(i.key)).map((i) => [i, split(i)]).sort((a, b) => b[1] - a[1]).map(([i]) => i);
+  // Depth batches (the backtrack gold set) come first, then threads where the jury splits.
+  const fresh = items.filter((i) => !gold.has(i.key)).map((i) => [i, (i.depth ? 100 : 0) + split(i)]).sort((a, b) => b[1] - a[1]).map(([i]) => i);
   const sinceRepeat = all.length - (all.map((g) => g.repeat).lastIndexOf(true) + 1);
   const repeatable = all.filter((g) => !g.repeat).slice(0, -15).filter((g) => !repeats.some((r) => r.key === g.key));
   let it = null, repeat = false;
@@ -30,7 +31,7 @@ function next() {
   if (!it) return { done: true, labeled: gold.size };
   const j = jury(it); const blind = BLIND || repeat;
   const prefill = blind || !j.length ? null : { boundary: vote(j.map((x) => x.boundary)), origin: vote(j.map((x) => x.origin)), status: vote(j.map((x) => x.status)), title: j.find((x) => x.model === 'opus')?.title || j[0].title };
-  return { key: it.key, repeat, blind, project: it.project, client: it.client, start: it.start, split: it.split, siblings: it.siblings, pred: it.pred,
+  return { key: it.key, repeat, blind, depth: !!it.depth, project: it.project, client: it.client, start: it.start, split: it.split, siblings: it.siblings, pred: it.pred,
     evidence: fs.readFileSync(path.join(L.evidence, safeName(it.key) + '.txt'), 'utf8'), jury: blind ? [] : j, prefill,
     progress: { labeled: gold.size, left: fresh.length, repeats: repeats.length, total: items.length } };
 }
@@ -45,7 +46,8 @@ const server = http.createServer((req, res) => {
   else if (u.pathname === '/label' && req.method === 'POST') {
     let body = ''; req.on('data', (d) => (body += d)); req.on('end', () => {
       try { const b = JSON.parse(body); if (!b.key || !b.origin || !b.status || !b.boundary) throw new Error('missing field');
-        appendJSONL(L.gold, { key: b.key, at: new Date().toISOString(), boundary: b.boundary, origin: b.origin, status: b.status, title_ok: !!b.title_ok, title: String(b.title || '').slice(0, 120), note: String(b.note || '').slice(0, 500), repeat: !!b.repeat, blind: !!b.blind, prefill: b.prefill || null, seconds: +b.seconds || null });
+        if (b.backtracks != null && !['0', '1', '2', '3+'].includes(b.backtracks)) throw new Error('bad backtracks');
+        appendJSONL(L.gold, { key: b.key, at: new Date().toISOString(), boundary: b.boundary, origin: b.origin, status: b.status, title_ok: !!b.title_ok, title: String(b.title || '').slice(0, 120), note: String(b.note || '').slice(0, 500), ...(b.backtracks != null ? { backtracks: b.backtracks } : {}), repeat: !!b.repeat, blind: !!b.blind, prefill: b.prefill || null, seconds: +b.seconds || null });
         json({ ok: true }); } catch (e) { res.writeHead(400).end(String(e)); }
     });
   } else res.writeHead(404).end();

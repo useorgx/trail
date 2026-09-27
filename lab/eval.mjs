@@ -30,7 +30,7 @@ for (const it of items) {
     const own = new Set(); for (const [a, b] of it.spans) for (let i = a; i <= b; i++) own.add(i);
     const now = new Set(); for (const [a, b] of t?.spans || []) for (let i = a; i <= b; i++) now.add(i);
     const inter = [...own].filter((i) => now.has(i)).length; const jac = inter / Math.max(1, new Set([...own, ...now]).size);
-    pred.set(it.key, t ? { ...toCodebook(t), boundaryStable: jac >= 0.9 } : null);
+    pred.set(it.key, t ? { ...toCodebook(t), boundaryStable: jac >= 0.9, backtracks: t.backs.length } : null);
   } else if (labeler.startsWith('model:')) {
     try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status }); } catch { pred.set(it.key, null); }
   } else if (labeler.startsWith('jury:')) {
@@ -47,6 +47,12 @@ for (const f of fields) {
   for (const it of items) { const g = gold.get(it.key)[f]; const p = pred.get(it.key)?.[f]; if (g == null) continue; n++; if (p === g) ok++; else errors.push({ key: it.key, field: f, gold: g, pred: p ?? '—', project: it.project, client: it.client }); conf[`${g}→${p ?? '—'}`] = (conf[`${g}→${p ?? '—'}`] || 0) + 1; }
   res[f] = { acc: +(ok / Math.max(n, 1)).toFixed(4), n, confusion: conf };
 }
+// Backtracks (depth batches only): does the labeler see a real change of approach where you did?
+const bt = items.filter((it) => gold.get(it.key).backtracks != null && pred.get(it.key)?.backtracks != null);
+if (bt.length) {
+  let tp = 0, fp = 0, fn = 0; for (const it of bt) { const g = gold.get(it.key).backtracks !== '0'; const p = pred.get(it.key).backtracks > 0; if (g && p) tp++; else if (p) fp++; else if (g) fn++; }
+  res.backtracks = { n: bt.length, precision: +(tp / Math.max(tp + fp, 1)).toFixed(3), recall: +(tp / Math.max(tp + fn, 1)).toFixed(3) };
+}
 if (labeler === 'trail') res.boundary = { acc: +(items.filter((it) => gold.get(it.key).boundary === 'right' && pred.get(it.key)?.boundaryStable).length / items.length).toFixed(4), note: 'share of threads you judged "right" whose spans the current classifier still reproduces' };
 // Your own consistency: labels you gave twice without knowing.
 const selfPairs = repeats.map((r) => ({ r, g: gold.get(r.key) })).filter((x) => x.g);
@@ -57,6 +63,7 @@ appendJSONL(L.experiments, row);
 if (!quiet) {
   console.log(`\n${labeler} on ${which} (${items.length} gold threads) — code ${row.code.sha}${row.code.dirty ? '+dirty' : ''}`);
   for (const f of [...fields, ...(labeler === 'trail' ? ['boundary'] : [])]) console.log(`  ${f.padEnd(9)} ${(res[f].acc * 100).toFixed(1)}%`);
+  if (res.backtracks) console.log(`  backtracks precision ${(res.backtracks.precision * 100).toFixed(0)}% · recall ${(res.backtracks.recall * 100).toFixed(0)}% (${res.backtracks.n} threads)`);
   if (res.self) console.log(`  your own consistency on ${res.selfN} repeats: origin ${res.self.origin * 100}% · status ${res.self.status * 100}% · boundary ${res.self.boundary * 100}%`);
   const top = {}; for (const e of errors) top[`${e.field}: ${e.gold} labeled as ${e.pred}`] = (top[`${e.field}: ${e.gold} labeled as ${e.pred}`] || 0) + 1;
   if (which === 'test') { console.log('  (test split: per-thread misses are not shown)'); } else console.log('  most common misses:'); if (which === 'dev') for (const [k, v] of Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 8)) console.log(`    ${String(v).padStart(3)}  ${k}`);
