@@ -3,7 +3,7 @@
 import os from 'node:os';
 import { WALLS, signature } from './walls.mjs';
 
-export const HARNESS = /^(Base directory for this skill|Approach this as|Skill \/|The previous response failed|<(command-|local-command|task-notification|system-reminder|environment_context|recommended_p|codex_internal|user_instructions|in-app-brows|permissions instructions)|Caveat:|\[Request interrupted|# AGENTS\.md)/;
+export const HARNESS = /^(Base directory for this skill|Approach this as|Skill \/|The previous response failed|<(command-|local-command|task-notification|system-reminder|environment_context|recommended_p|codex_internal|user_instructions|in-app-brows|permissions instructions)|Caveat:|\[Request interrupted|\[Usage limit reached|\[Earlier usage-limit notes|The app was quit while you were working|Another Claude session sent a message|<cross-session-message|Stop hook feedback:|A session-scoped Stop hook is now active|"Auto-fix pull requests" \(the desktop app\)|# AGENTS\.md)/;
 export const CONTINUE = /^\s*(continue|go on|keep going|go|proceed|yes|yep|ok(ay)?|do it|go ahead|try again|continue from where you left off\.?|resume)[.!]?\s*$/i;
 // A discovery needs a problem, not just the word "found": "found the file" is reading; "found a leak" is a discovery.
 const PROBLEM = String.raw`(bug|issue|problem|leak|leaking|regression|incident|race|vulnerabilit\w*|security hole|mismatch|contradiction|inconsisten\w*|drift|outage|corrupt\w*|broken)`;

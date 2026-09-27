@@ -7,7 +7,7 @@ import { redactDeep } from './redact.mjs';
 import { archivedOnly } from './archive.mjs';
 import { discoverCopilot, discoverGemini, discoverDroid } from './adapters-json.mjs';
 
-export const VERSION = 'trail-1.8';
+export const VERSION = 'trail-2.0';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),

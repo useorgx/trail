@@ -1,6 +1,6 @@
 {
   "name": "@useorgx/trail",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "See what your coding agents actually did. Reads Claude Code, Codex, OpenCode and Cursor history into threads of work, walls, and lessons — on your machine, in seconds, with no model and no upload.",
   "type": "module",
   "bin": {
@@ -47,6 +47,6 @@
     "access": "public"
   },
   "devDependencies": {
-    "@useorgx/agent-work-receipt": "^0.1.0"
+    "@useorgx/agent-work-receipt": "^0.2.0"
   }
 }

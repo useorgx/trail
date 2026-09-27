@@ -3,12 +3,25 @@
 // happened step by step, which artifacts were the deliverable, what checked it, how it ended, what it cost, where a
 // person stepped in. Every inferred value says so (extensions['org.orgx.trail/v1'].provenance) with a confidence.
 import { isShip, isVerification } from './steps.mjs';
+import { VERSION } from './store.mjs';
 
-export const SCHEMA_VERSION = 'agent-work-receipt/v0.1';
+export const SCHEMA_VERSION = 'agent-work-receipt/v0.2';
 export const EXT = 'org.orgx.trail/v1';
 const iso = (t) => { if (!t) return null; const d = new Date(t); return isNaN(d) ? null : d.toISOString(); };
-const clip = (s, n) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? x.slice(0, n - 1) + '…' : x; };
+// Never cut through a surrogate pair: a lone half of an emoji is not valid Unicode and fails the receipt.
+const clip = (s, n) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim().replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, ''); if (x.length <= n) return x; let cut = x.slice(0, n - 1); if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1); return cut + '…'; };
 const nonEmpty = (s, fallback) => (String(s ?? '').trim() ? String(s) : fallback);
+// What a person actually asked, without what the harness wrapped around it: pasted-file headers, artifact wrappers,
+// editor-context JSON, a compaction summary. Used for the receipt's summary only; the objective keeps the full text.
+export function cleanAsk(text) {
+  let t = String(text || '').replace(/<artifact-content-authored-by-others\/?>/g, '').replace(/^\s*<[^>]{1,80}>\s*/g, '').trim();
+  if (/^(This session is being continued from a previous conversation|The summarized conversation included)/i.test(t)) return 'Continued from an earlier conversation';
+  if (/^\s*\{"context":/.test(t)) return 'Asked with editor context attached';
+  const ref = t.match(/^Referenced ChatGPT conversation:[\s\S]*?\n\s*\n([\s\S]+)/); if (ref) t = ref[1]; else if (/^Referenced ChatGPT conversation:/.test(t)) return 'Shared a ChatGPT conversation';
+  const files = t.match(/^(Files (mentioned|pasted) by the user|Attached files?):[\s\S]*?\n\s*\n([\s\S]+)/i); if (files) t = files[3];
+  t = t.replace(/^(@"?[^\s"]+"?\s*)+/, '').trim();
+  return t || String(text || '').trim();
+}
 const firstSentence = (s) => clip(String(s || '').split(/(?<=[.!?])\s|\n/)[0] || s, 200);
 const isPath = (t) => /^(\/|~\/|\.{0,2}\/)?[\w.@-]+(\/[\w.@-]+)+\.\w{1,8}$/.test(String(t || '').trim());
 const base = (p) => String(p).split('/').pop();
@@ -110,7 +123,7 @@ export function buildReceipt(session, goal, steps, thread) {
   const addEvidence = (step, kind, summary, excerpt) => {
     if (evId.has(step.at)) return evId.get(step.at);
     const id = `ev-${step.at}`; evId.set(step.at, id);
-    evidence.push({ id, kind, summary: nonEmpty(clip(summary, 500), kind), observed_at: iso(step.ts) || completed, ...(excerpt ? { excerpt: clip(excerpt, 1200) } : {}), ref: { system: session.client, type: 'transcript_event', id: `${session.id}#${step.at}` } });
+    evidence.push({ id, kind, summary: nonEmpty(clip(summary, 500), kind), observed_at: iso(step.ts) || completed, ...(clip(excerpt, 1200) ? { excerpt: clip(excerpt, 1200) } : {}), ref: { system: session.client, type: 'transcript_event', id: `${session.id}#${step.at}` } });
     return id;
   };
   const evidenceFor = (step) => (step.kind === 'tool' ? addEvidence(step, isVerification(step) || ['test', 'typecheck', 'lint', 'build'].includes(step.action) ? 'check_output' : isShip(step) ? 'ship_output' : 'tool_output', `${step.action} ${step.result}: ${step.target || step.tool}`, step.out || step.errText) : addEvidence(step, 'agent_report', firstSentence(step.text), step.text));
@@ -123,7 +136,7 @@ export function buildReceipt(session, goal, steps, thread) {
   const runChecks = tools.filter((x) => ['test', 'typecheck', 'lint', 'build'].includes(x.action) && x.at > lastChange && x.result !== 'denied');
   const checks = [
     ...runChecks.map((x) => ({ id: `check-${x.at}`, name: `${x.action}: ${clip(x.target, 120) || x.action}`, status: x.result === 'fail' ? 'failed' : x.result === 'pass' ? 'passed' : 'inconclusive', method: x.result === 'ok' ? 'Ran without a failure; output did not state a pass count.' : 'Pass/fail read from the command output.', evidence_ids: [evidenceFor(x)] })),
-    ...checked.filter((c) => c.status !== 'unknown').map((c) => ({ id: `criterion-${c.id}`, name: c.text, status: c.status === 'met' ? 'passed' : 'failed', method: `Acceptance criterion (${c.kind}) matched to evidence by trail rules.`, evidence_ids: c.evidence_ids })),
+    ...checked.filter((c) => c.status !== 'unknown').map((c) => ({ id: `criterion-${c.id}`, name: c.text, status: c.status === 'met' ? 'passed' : 'failed', method: `Acceptance criterion (${c.kind}) matched to evidence by trail rules.`, evidence_ids: c.evidence_ids, criterion_ids: [c.id] })),
   ].filter((c) => c.evidence_ids.length);
   const outcomeStep = mine.find((x) => x.at === goal.outcome?.at); const outcomeEv = outcomeStep ? evidenceFor(outcomeStep) : null;
   const vStatus = !checks.length ? 'unverified' : checks.every((c) => c.status === 'passed') ? 'passed' : checks.some((c) => c.status === 'passed') ? 'partial' : checks.every((c) => c.status === 'inconclusive') ? 'inconclusive' : 'failed';
@@ -144,20 +157,31 @@ export function buildReceipt(session, goal, steps, thread) {
   const human_interventions = asks.slice(1).map((x) => ({ id: `human-${x.at}`, kind: CORRECTION.test(x.text || '') ? 'correction' : 'input', actor: { type: 'human', id: 'workspace-member' }, summary: nonEmpty(clip(x.text, 300), 'message'), occurred_at: iso(x.ts) || completed }));
 
   const arts = artifacts(mine, finalText, receiptId, sessionRef);
+  const actionIds = new Set(actions.map((a) => a.id));
   const [mode, astatus] = AUTHORITY[session.mode] || ['unknown', 'unknown'];
   const receipt = {
     schema_version: SCHEMA_VERSION,
     receipt_id: receiptId,
-    intent: { summary: nonEmpty(firstSentence(goal.title || ask), 'Untitled work'), ...(ask ? { objective: clip(ask, 2000) } : {}), ...(checked.length ? { acceptance_criteria: checked.map((c) => c.text) } : {}), ...(constraints.length ? { constraints } : {}), request_ref: sessionRef, metadata: { origin: goal.origin, provenance: 'trail_inferred' } },
+    intent: { summary: nonEmpty(firstSentence(cleanAsk(ask || goal.title)), 'Untitled work'), ...(ask ? { objective: clip(ask, 2000) } : {}), ...(checked.length ? { acceptance_criteria: checked.map((c) => c.text), criteria: checked.map((c) => ({ id: c.id, text: c.text, kind: c.kind, source: 'inferred' })) } : {}), ...(constraints.length ? { constraints } : {}), request_ref: sessionRef, metadata: { origin: goal.origin, provenance: 'trail_inferred' } },
     actor: { type: 'agent', id: session.client, display_name: session.label || session.client, runtime: { name: session.client }, ...(session.model ? { model: { provider: PROVIDER(session.model), name: String(session.model).slice(0, 200) } } : {}) },
     authority: { mode, status: astatus, scope: { actions: [], resources: [] }, metadata: { permission_mode: session.mode || 'unknown', provenance: 'observed' } },
     actions, artifacts: arts, evidence,
-    outcome: { status: oStatus, summary: nonEmpty(finalText ? firstSentence(finalText) : `${goal.outcome?.kind || 'unclear'} (inferred from the steps)`, 'No closing message.'), acceptance: { status: 'pending' }, metadata: { kind: goal.outcome?.kind || 'unclear', confidence: goal.conf?.outcome ?? null, provenance: 'trail_inferred', ...(outcomeEv ? { decided_by_evidence: outcomeEv } : {}) } },
+    outcome: { status: oStatus, ...(checked.length ? { criteria_results: checked.map((c) => ({ criterion_id: c.id, status: c.evidence_ids.length ? c.status : 'unknown', evidence_ids: c.evidence_ids, confidence: c.confidence })) } : {}), summary: nonEmpty(finalText ? firstSentence(finalText) : `${goal.outcome?.kind || 'unclear'} (inferred from the steps)`, 'No closing message.'), acceptance: { status: 'pending' }, metadata: { kind: goal.outcome?.kind || 'unclear', confidence: goal.conf?.outcome ?? null, provenance: 'trail_inferred', ...(outcomeEv ? { decided_by_evidence: outcomeEv } : {}) } },
     verification: { status: vStatus, method: checks.length ? 'Checks observed in the transcript (test, typecheck, lint, build runs after the last change) and acceptance criteria matched to evidence.' : 'No check ran after the last change, and no acceptance criterion could be matched to evidence.', verifier: { type: 'service', id: 'orgx-trail', display_name: 'trail' }, checks, evidence_ids: [...new Set(checks.flatMap((c) => c.evidence_ids))], ...(checks.length ? { verified_at: evidence.filter((e) => checks.some((c) => c.evidence_ids.includes(e.id))).map((e) => e.observed_at).sort().pop() || completed } : {}) },
     cost: { currency: 'USD', total: goal.cost?.usd ?? 0, estimated: true, ...(goal.cost?.tokens ? { usage: [{ name: 'model_tokens', quantity: goal.cost.tokens, unit: 'token' }] } : {}), metadata: { basis: goal.cost ? 'list prices × transcript token counts' : 'no token counts in this transcript' } },
     lineage: { run_ref: sessionRef, parent_receipt_refs: [], references: [...arts.filter((a) => a.role === 'output').map((a) => ({ relationship: a.kind === 'pull_request' ? 'produced' : 'changes', ref: a.ref }))].slice(0, 200) },
     human_interventions,
     timestamps: { started_at: started, completed_at: completed, issued_at: completed },
+    // Which values trail saw and which it inferred, with the rules version that inferred them.
+    provenance: [
+      { path: '/intent/objective', basis: 'observed', confidence: 1 },
+      ...(checked.length ? [{ path: '/intent/criteria', basis: 'inferred', method: `trail-rules/${VERSION}`, confidence: 0.6 }] : []),
+      { path: '/outcome/status', basis: 'inferred', method: goal.jev ? `trail-rules/${VERSION}+model:jev` : `trail-rules/${VERSION}`, ...(typeof goal.conf?.outcome === 'number' ? { confidence: +goal.conf.outcome.toFixed(2) } : {}) },
+      { path: '/verification/status', basis: 'observed', method: 'checks read from the transcript', confidence: 0.9 },
+      { path: '/cost/total', basis: 'inferred', method: 'list prices x transcript tokens', ...(goal.cost ? {} : { confidence: 0 }) },
+    ].filter((x) => x.path !== '/intent/objective' || ask),
+    // Where the approach changed, and what set it off.
+    trajectory: (goal.backtracks || []).slice(0, 100).map((b, i) => ({ id: `turn-${i + 1}`, kind: 'change_of_course', summary: `Changed approach after ${b.trigger === 'error' ? 'a failure' : b.trigger === 'denied' ? 'a denied action' : b.trigger === 'human' ? 'a correction' : 'reconsidering'} (step ${b.at}).`, trigger: ({ error: 'error', denied: 'denial', human: 'human', steer: 'human' })[b.trigger] || 'self', ...(actionIds.has(`step-${b.at}`) ? { action_ids: [`step-${b.at}`] } : {}), ...(typeof goal.conf?.backtracks === 'number' ? { confidence: +goal.conf.backtracks.toFixed(2) } : {}) })),
     extensions: { [EXT]: {
       goal_id: goal.id, root_thread: goal.root, origin: goal.origin, cwd: session.cwd || null, repo: session.repo || null, project: session.project || null,
       outcome_kind: goal.outcome?.kind || 'unclear',

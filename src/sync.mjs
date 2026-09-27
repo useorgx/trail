@@ -150,14 +150,18 @@ const TEXT_FIELDS = (r) => [
   ...r.evidence.flatMap((e) => [[e, 'summary'], [e, 'excerpt']]), ...r.human_interventions.map((h) => [h, 'summary']),
   ...r.actions.flatMap((a) => [[a, 'summary'], [a, 'error']]),
 ].filter(([o, k]) => typeof o?.[k] === 'string' && o[k].length > 3);
-const idemKey = (id) => { const k = String(id).replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/^[^A-Za-z0-9]+/, ''); return k.length <= 160 ? k : `trail:${sha(id).slice(0, 40)}`; };
-const receiptFingerprint = (r) => sha(JSON.stringify([r.outcome, r.verification.status, r.lineage.parent_receipt_refs, r.extensions?.['org.orgx.trail/v1']?.labels])).slice(0, 16);
+// One key per version of a receipt: a corrected receipt is a new import (OrgX keeps the latest per receipt id), never
+// an idempotency conflict with the version it replaces.
+const idemKey = (id, fp) => { const k = `${String(id).replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/^[^A-Za-z0-9]+/, '')}@${fp.slice(0, 8)}`; return k.length <= 160 ? k : `trail:${sha(id).slice(0, 40)}@${fp.slice(0, 8)}`; };
+const SETTLE_MS = 30 * 60_000; // work still in progress keeps changing; send it once it has been quiet for 30 minutes
+const receiptFingerprint = (r) => sha(JSON.stringify([r.outcome, r.verification.status, r.lineage, r.extensions?.['org.orgx.trail/v1']?.labels])).slice(0, 16);
 
 export async function syncReceipts({ dryRun = false, base, limit = 50, since } = {}) {
   const { ledger, withGraph } = await import('./ledger.mjs');
   const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {};
   const L = ledger({ persist: true });
-  let todo = L.receipts.filter((r) => (!since || r.timestamps.started_at >= since)).map((r) => withGraph(r, L)).filter((r) => state.receipts[r.receipt_id] !== receiptFingerprint(r))
+  const settled = Date.now() - SETTLE_MS;
+  let todo = L.receipts.filter((r) => (!since || r.timestamps.started_at >= since) && Date.parse(r.timestamps.completed_at) < settled).map((r) => withGraph(r, L)).filter((r) => state.receipts[r.receipt_id] !== receiptFingerprint(r))
     .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, limit);
   if (piiEnabled() && todo.length) {
     todo = JSON.parse(JSON.stringify(todo)); const slots = todo.flatMap(TEXT_FIELDS); const masked = maskPii(slots.map(([o, k]) => o[k])); slots.forEach(([o, k], i) => { o[k] = masked[i]; });
@@ -175,7 +179,7 @@ export async function syncReceipts({ dryRun = false, base, limit = 50, since } =
   let batch = true;
   for (let i = 0; i < todo.length;) {
     const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
-    const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id) };
+    const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id, receiptFingerprint(r)) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id, receiptFingerprint(chunk[0])) };
     const res = await fetch(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
     if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
     if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
