@@ -60,8 +60,8 @@ export function withGraph(r0, L) {
   const links = L.built.links.filter((l) => l.to === r.receipt_id || l.from === r.receipt_id).slice(0, 20);
   return {
     ...r,
-    lineage: { ...r.lineage, parent_receipt_refs: parents,
-      references: [...r.lineage.references, ...links.filter((l) => l.to === r.receipt_id && l.confidence >= JOIN_THRESHOLD).map((l) => ({ relationship: l.relationship, ref: { system: 'orgx-trail', type: 'agent_work_receipt', id: l.from } }))].slice(0, 200) },
+    lineage: { ...r.lineage, parent_receipt_refs: parents, ...(ws ? { workstream_ref: { system: 'orgx-trail', type: 'workstream', id: ws } } : {}),
+      references: [...r.lineage.references, ...links.filter((l) => l.to === r.receipt_id && l.confidence >= JOIN_THRESHOLD).map((l) => ({ relationship: l.relationship, ref: { system: 'orgx-trail', type: 'agent_work_receipt', id: l.from }, confidence: l.confidence }))].slice(0, 200) },
     extensions: { ...r.extensions, [EXT]: { ...e,
       workstream: ws ? { id: ws, title: L.built.workstreams.find((w) => w.id === ws)?.title || null } : null,
       labels: lab ? { work_type: lab.work_type, area_candidates: lab.area_candidates, taxonomy: L.tax.version } : null,

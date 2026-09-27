@@ -17,6 +17,10 @@ npx @useorgx/trail
 |---|---|
 | `trail` | read new work, then open the explorer |
 | `trail goals` | see each piece of work, its detours, how it ended, and where the agent changed course (`--json`) |
+| `trail receipts` | one [Agent Work Receipt](https://github.com/useorgx/agent-work-receipt) (v0.2) per piece of work: what was asked, whether each acceptance criterion was met and on what evidence, what was delivered, what checked it (`<id>`, `--json`, `--export file`) |
+| `trail workstreams` | pieces of work joined across sessions by a shared PR, branch, rarely touched files, a pasted id, or an explicit continuation; words alone never join (`<id>`, `--all`) |
+| `trail search <q>` | search your receipts: ranked text plus exact filters such as `outcome:blocked type:fix repo:app pr:12 conf:<0.6 unmet:tests` |
+| `trail review` / `trail label` | the questions about your own work only you can settle (did it get done, was a criterion met); answers win over every guess |
 | `trail deepen` | get more reliable outcomes. With your approval, Jev (TypeSafe's decision model) reads each step and piece of work. Trail marks an outcome verified when both reads agree. Pay with OrgX credits after `trail connect`, or use your own OpenRouter key with `--key-file`. Trail shows a quote first and sends nothing until you confirm. |
 | `trail walls` | find a wall: a failure your agents keep hitting in separate sessions. Each wall includes a fix (`--json` for agents). |
 | `trail copy <id>` | copy a selected fix as a prompt, rule, or command |
@@ -31,6 +35,7 @@ npx @useorgx/trail
 | `trail connect` | sign in to OrgX through [`@useorgx/wizard`](https://www.npmjs.com/package/@useorgx/wizard); trail never handles your password or key |
 | `trail credits` | the people whose work trail is built on |
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
+| `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first |
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 
