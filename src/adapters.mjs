@@ -2,14 +2,17 @@
 // Streaming and selective: huge tool outputs are sniffed, never fully parsed.
 import fs from 'node:fs';
 import readline from 'node:readline';
+import zlib from 'node:zlib';
 import { HARNESS } from './classify.mjs';
 
 let onBytes = null;
 export const setByteListener = (fn) => { onBytes = fn; };
 
 async function* lines(file) {
-  const input = fs.createReadStream(file, { highWaterMark: 1 << 20 });
-  if (onBytes) input.on('data', (b) => onBytes(b.length));
+  const raw = fs.createReadStream(file, { highWaterMark: 1 << 20 });
+  if (onBytes) raw.on('data', (b) => onBytes(b.length));
+  // Archived transcripts (trail archive) are gzipped; read them the same way.
+  const input = file.endsWith('.gz') ? raw.pipe(zlib.createGunzip()) : raw;
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
   for await (const l of rl) yield l;
 }

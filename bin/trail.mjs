@@ -51,6 +51,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail bench        would a model walk into your known walls? (--models haiku,sonnet · --limit 10)
   trail share <id>   a public page for a fix, measured across everyone who adopted it (--copy)
   trail card         your trail as a shareable image + post text   (--copy · --open)
+  trail archive      keep transcripts after Claude Code deletes them (30 days by default)   (--client claude|codex|all)
   trail privacy      what trail keeps, where, who can read it, and what each command sends   (--pii on|off)
   trail credits      the people whose work trail is built on, and where each idea lives in trail
   trail mcp          trail as tools for your agents (claude mcp add trail -- npx -y @useorgx/trail mcp)
@@ -174,6 +175,14 @@ else if (cmd === 'share') {
     else console.log(`  Your result: ${r.effect.text}\n  It reaches the page with your next \`trail sync\` (counts only).`);
     if (flag('copy')) console.log(copy(r.text) ? '  Copied the post text.' : `\n${r.text}`); else console.log(`\n${r.text}\n\n  (--copy puts this on your clipboard)`);
   }
+}
+else if (cmd === 'archive') {
+  // Keep transcripts after their client deletes them (Claude Code: after 30 days by default).
+  const { archive, ARCHIVE } = await import('../src/archive.mjs');
+  const clients = val('client') === 'all' ? ['claude', 'codex'] : (val('client') || 'claude').split(',');
+  const r = await archive({ clients, onProgress: (p) => process.stderr.write(`  ${p.copied} copied · ${(p.bytesIn / 1e6).toFixed(0)} MB → ${(p.bytesOut / 1e6).toFixed(0)} MB\r`) });
+  console.log(`\n  Archived ${r.copied} new or changed transcripts (${(r.bytesIn / 1e6).toFixed(0)} MB → ${(r.bytesOut / 1e6).toFixed(0)} MB gzipped); ${r.skipped} already kept. In ${ARCHIVE}, readable by you only.`);
+  console.log('  Scans read these copies once the originals are deleted. Run it again any time; it only copies what changed.' + (clients.includes('codex') ? '' : '  (Codex too: --client all)'));
 }
 else if (cmd === 'privacy') {
   if (val('pii')) { const { setPii, opfPath } = await import('../src/pii.mjs'); const on = val('pii') === 'on'; setPii(on); console.log(on ? `Personal-data masking is on.${opfPath() ? '' : ' Install OpenAI Privacy Filter first: pip install git+https://github.com/openai/privacy-filter (until then, sync --with-titles and deepen will refuse to send).'}` : 'Personal-data masking is off.'); }

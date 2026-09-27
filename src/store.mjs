@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { discoverOpenCode, discoverCursor, discoverCursorIDE } from './adapters-sqlite.mjs';
 import { redactDeep } from './redact.mjs';
+import { archivedOnly } from './archive.mjs';
+import { discoverCopilot, discoverGemini, discoverDroid } from './adapters-json.mjs';
 
 export const VERSION = 'trail-1.6';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
@@ -71,6 +73,11 @@ export function discover({ since, client } = {}) {
   if (!client || client === 'codex') walk(path.join(H, '.codex', 'sessions'), (n) => n.startsWith('rollout-') && n.endsWith('.jsonl'), 'codex');
   if (!client || client === 'opencode') out.push(...discoverOpenCode(since));
   if (!client || client === 'cursor') out.push(...discoverCursor(since));
+  if (!client || client === 'copilot') out.push(...discoverCopilot(since));
+  if (!client || client === 'gemini') out.push(...discoverGemini(since));
+  if (!client || client === 'droid') out.push(...discoverDroid(since));
+  // Transcripts their client has deleted, kept by `trail archive`.
+  out.push(...archivedOnly({ since }).filter((f) => !client || f.client === client));
   if (!client || client === 'cursor-ide') out.push(...discoverCursorIDE(since, path.join(HOME, 'cursor-ide-index.json')));
   return out;
 }

@@ -276,3 +276,55 @@ test('personal-data masking: Privacy Filter output is split back per item, and a
   assert.throws(() => maskPii(['FAIL'], { bin: bin.replace('.mjs', '.cjs') }), PiiError);
   assert.throws(() => maskPii(['x'], { bin: null }), (e) => e instanceof PiiError && /Nothing was sent/.test(e.message));
 });
+
+test('archive keeps a gzipped copy that reads the same, and is used only once the original is gone', async () => {
+  const root = fs.mkdtempSync(path.join(tmp, 'claude-root-')); fs.mkdirSync(path.join(root, 'proj'));
+  const orig = path.join(root, 'proj', 'sess-arch.jsonl'); fs.copyFileSync(fx('claude.jsonl'), orig);
+  process.env.TRAIL_CLAUDE_PROJECTS = root;
+  try {
+    const { archive, archivedOnly, archivePathFor } = await import('../src/archive.mjs');
+    const r = await archive({ clients: ['claude'] }); assert.equal(r.copied, 1, 'first archive copies the file');
+    assert.equal((await archive({ clients: ['claude'] })).copied, 0, 'unchanged files are not copied again');
+    const gz = archivePathFor('claude', orig); assert.equal(fs.statSync(gz).mode & 0o077, 0, 'private');
+    const { readClaude } = await import('../src/adapters.mjs');
+    const a = await readClaude(orig), b = await readClaude(gz);
+    assert.deepEqual(b.ev.map((e) => [e.k, e.text || e.target]), a.ev.map((e) => [e.k, e.text || e.target]));
+    assert.equal(archivedOnly().length, 0, 'while the original exists, the live file is read');
+    fs.rmSync(orig); assert.equal(archivedOnly().length, 1, 'once it is deleted, the archived copy is read');
+  } finally { delete process.env.TRAIL_CLAUDE_PROJECTS; }
+});
+
+test('Copilot (VS Code), Gemini CLI and Factory Droid read into the same events', async () => {
+  const { readCopilot, readGemini, readDroid } = await import('../src/adapters-json.mjs');
+  // Copilot .jsonl: snapshot, a replaced field, appended requests; one tool call serialized twice (running, then done).
+  const ws = fs.mkdtempSync(path.join(tmp, 'vscode-ws-')); fs.writeFileSync(path.join(ws, 'workspace.json'), JSON.stringify({ folder: 'file:///work/app' }));
+  fs.mkdirSync(path.join(ws, 'chatSessions')); const cp = path.join(ws, 'chatSessions', 's1.jsonl');
+  const req = { requestId: 'r1', timestamp: 1790000000000, modelId: 'copilot/gpt-5.5', message: { text: 'fix the failing test' },
+    response: [{ value: 'Looking at the test output to find the failing assertion first.' }, { kind: 'toolInvocationSerialized', toolCallId: 'g1', toolId: 'run_in_terminal', isComplete: false },
+      { kind: 'toolInvocationSerialized', toolCallId: 'g1', toolId: 'run_in_terminal', isComplete: true, resultDetails: { isError: true, output: 'FAIL src/a.test.ts' } }, { kind: 'textEditGroup', uri: { path: '/work/app/src/a.ts' } }],
+    result: { metadata: { toolCallRounds: [{ toolCalls: [{ id: 'call_x', name: 'run_in_terminal', arguments: JSON.stringify({ command: 'pnpm test' }) }] }] } } };
+  fs.writeFileSync(cp, [{ kind: 0, v: { sessionId: 's1', creationDate: 1790000000000, requests: [] } }, { kind: 1, k: ['customTitle'], v: 'x' }, { kind: 2, k: ['requests'], v: [req] }].map((x) => JSON.stringify(x)).join('\n'));
+  const c = await readCopilot(cp);
+  assert.equal(c.cwd, '/work/app');
+  assert.deepEqual(c.ev.map((e) => e.k + ':' + (e.tool || '')), ['ask:', 'say:', 'tool:Bash', 'tool:Edit'], 'the twice-serialized tool call is one event, at its first position');
+  const bash = c.ev.find((e) => e.tool === 'Bash'); assert.equal(bash.target, 'pnpm test'); assert.equal(bash.err, true);
+  // Gemini CLI session file.
+  const gdir = fs.mkdtempSync(path.join(tmp, 'gemini-')); fs.mkdirSync(path.join(gdir, 'chats')); fs.writeFileSync(path.join(gdir, '.project_root'), '/work/api');
+  const gf = path.join(gdir, 'chats', 'session-2026-09-27T10-00-abcd1234.json');
+  fs.writeFileSync(gf, JSON.stringify({ sessionId: 'abcd1234', startTime: '2026-09-27T10:00:00Z', lastUpdated: '2026-09-27T10:05:00Z', messages: [
+    { id: 'm1', timestamp: '2026-09-27T10:00:00Z', type: 'user', content: 'why is the build failing' },
+    { id: 'm2', timestamp: '2026-09-27T10:01:00Z', type: 'gemini', model: 'gemini-3.8-flash', content: 'Checking the build log for the first error before changing anything.', thoughts: [{ subject: 'Plan', description: 'Read the build log' }],
+      toolCalls: [{ name: 'run_shell_command', args: { command: 'pnpm build' }, status: 'error', result: [{ functionResponse: { response: { error: 'Command failed' } } }] }], tokens: { input: 1000, output: 50, cached: 200, thoughts: 10 } }] }));
+  const g = await readGemini(gf);
+  assert.equal(g.cwd, '/work/api'); assert.equal(g.model, 'gemini-3.8-flash'); assert.equal(g.reasoning.length, 1);
+  const gb = g.ev.find((e) => e.k === 'tool'); assert.equal(gb.tool, 'Bash'); assert.equal(gb.target, 'pnpm build'); assert.equal(gb.err, true);
+  assert.deepEqual(g.usage, { input: 1000, cached: 200, output: 60 });
+  // Factory Droid session.
+  const df = path.join(tmp, 'droid-s1.jsonl');
+  fs.writeFileSync(df, [{ type: 'session_start', id: 'd1', cwd: '/work/web', created_at: '2026-09-27T11:00:00Z' },
+    { type: 'message', timestamp: '2026-09-27T11:00:01Z', message: { role: 'user', content: [{ type: 'text', text: 'run the tests' }] } },
+    { type: 'message', timestamp: '2026-09-27T11:00:02Z', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'tool_use', id: 't1', name: 'Execute', input: { command: 'npm test' } }] } },
+    { type: 'message', timestamp: '2026-09-27T11:00:03Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'Error: Cannot find module vitest' }] } }].map((x) => JSON.stringify(x)).join('\n'));
+  const d = await readDroid(df);
+  assert.equal(d.cwd, '/work/web'); const dt = d.ev.find((e) => e.k === 'tool'); assert.equal(dt.tool, 'Bash'); assert.equal(dt.err, true); assert.match(dt.errText, /Cannot find module/);
+});

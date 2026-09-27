@@ -24,7 +24,7 @@ parentPort.on('message', async ({ file, client }) => {
     // Language the record leaves out goes to a side file; goals are built from per-step facts and tags.
     const full = s.ev.map((e, i) => (e.full ? [i, e.full] : null)).filter(Boolean);
     const lang = { reasoning: s.reasoning || [], full };
-    const id = s.id || path.basename(file).replace(/\.jsonl$/, '').slice(-36);
+    const id = s.id || path.basename(file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
     if (lang.reasoning.length || full.length) writeLanguage(id, lang);
     const st = steps(s, lang); const goals = buildGoals(s, r, st, { sessionId: id });
     // Estimated cost from the transcript's own token counts and list prices (src/cost.mjs).

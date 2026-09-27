@@ -1,14 +1,14 @@
 # orgx trail
 
 See what your coding agents actually did, stop them relearning the same walls, and prove the fix worked.
-Reads your Claude Code, Codex, OpenCode and Cursor history into **threads of work**, finds the **walls** they keep rediscovering,
+Reads your Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Factory Droid history into **threads of work**, finds the **walls** they keep rediscovering,
 and writes the fix where they'll read it.
 
 ```bash
 npx @useorgx/trail
 ```
 
-- **Local.** Reads `~/.claude/projects`, `~/.codex/sessions`, OpenCode's database and Cursor's chat stores, read-only, on your machine. Nothing is uploaded unless you run `trail sync`.
+- **Local.** Reads each client's own history on your machine, read-only: Claude Code, Codex (including its structured command, MCP and file-change records), Cursor (editor and agent), GitHub Copilot in VS Code, Gemini CLI, OpenCode and Factory Droid. Windsurf keeps its history encrypted, so it isn't read. Nothing is uploaded unless you run `trail sync`.
 - **Fast.** ~3,300 sessions (38 GB) in about 40 seconds; after that, only new work is read.
 - **Zero dependencies.** Small enough to read before you run it.
 
