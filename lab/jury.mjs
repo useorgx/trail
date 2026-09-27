@@ -1,12 +1,17 @@
 // A jury of models pre-labels each thread against the codebook, citing event numbers.
-// It proposes; only a human label is gold. Usage: node lab/jury.mjs [--models haiku,sonnet,opus] [--batch batch-001.json] [--par 4]
+// It proposes; only a human label is gold. Usage: node lab/jury.mjs [--batch batch-001.json] [--par 4]
+// Model policy: iteration runs use the cheapest capable model (Haiku). Premium models are for final quality
+// benchmarking only and must be asked for explicitly: --models sonnet,opus --benchmark (labels are tagged as such).
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { L, ensureLab, safeName, allBatchItems, ORIGINS, STATUSES, BOUNDARIES } from './lib.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i >= 0 ? process.argv[i + 1] : d; };
-const MODELS = arg('models', 'haiku,sonnet,opus').split(','); const PAR = +arg('par', 4); const only = arg('batch');
+const MODELS = arg('models', 'haiku').split(',');
+const BENCHMARK = process.argv.includes('--benchmark');
+const PREMIUM = MODELS.filter((m) => m !== 'haiku');
+if (PREMIUM.length && !BENCHMARK) { console.error(`${PREMIUM.join(', ')} ${PREMIUM.length > 1 ? 'are' : 'is'} for final quality benchmarks only. Add --benchmark to run ${PREMIUM.length > 1 ? 'them' : 'it'} on purpose; iteration uses haiku.`); process.exit(2); } const PAR = +arg('par', 4); const only = arg('batch');
 ensureLab();
 const codebook = fs.readFileSync(new URL('./codebook.md', import.meta.url), 'utf8');
 const SCHEMA = JSON.stringify({ type: 'object', additionalProperties: false, required: ['boundary', 'origin', 'status', 'title_ok', 'title', 'evidence', 'confidence'], properties: {
@@ -38,7 +43,7 @@ async function worker() {
     if (fs.existsSync(f)) { done++; continue; }
     const evidence = fs.readFileSync(path.join(L.evidence, safeName(it.key) + '.txt'), 'utf8');
     const prompt = `Session in ${it.project} (${it.client}). Other threads in this session: ${it.siblings.join(' | ')}\n\nEvents this thread owns ("~" = context before it, not part of it):\n${evidence}`;
-    try { const r = await ask(m, prompt); cost += r.cost; fs.writeFileSync(f, JSON.stringify({ model: m, at: new Date().toISOString(), ...r })); }
+    try { const r = await ask(m, prompt); cost += r.cost; fs.writeFileSync(f, JSON.stringify({ model: m, at: new Date().toISOString(), purpose: m === 'haiku' ? 'iteration' : 'benchmark', ...r })); }
     catch (e) { failed++; if (failed <= 3) console.error(`  ${m} ${it.key}: ${e.message.slice(0, 160)}`); }
     done++; if (done % 10 === 0) process.stdout.write(`\r  ${done} done · $${cost.toFixed(2)} · ${failed} failed · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   }
