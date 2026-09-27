@@ -44,7 +44,6 @@
     "url": "https://github.com/useorgx/trail/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   }
 }

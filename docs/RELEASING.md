@@ -12,6 +12,10 @@ Do this in the npm website. Do not add an npm token to GitHub.
 6. Set the workflow filename to `publish.yml`.
 7. Leave the environment blank and save the trusted publisher.
 
+## Provenance
+
+Provenance is generated only in CI: `publish.yml` runs `npm publish --provenance`. `package.json` deliberately does not set `publishConfig.provenance`, because a manual `npm publish` from a laptop cannot produce an attestation and npm refuses the publish when it is required ("Automatic provenance generation not supported"). Prefer tagged releases; a manual publish is unsigned.
+
 ## Release a version
 
 Start from a clean, current `main` branch. Replace `X.Y.Z` below with the release version.
