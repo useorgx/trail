@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverOpenCode, discoverCursor } from './adapters-sqlite.mjs';
+import { redactDeep } from './redact.mjs';
 
-export const VERSION = 'trail-1.0';
+export const VERSION = 'trail-1.1';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),
@@ -14,17 +15,35 @@ export const P = {
   summary: path.join(HOME, 'summary.json'),
   language: path.join(HOME, 'language'),
 };
-export function ensure() { fs.mkdirSync(P.sessions, { recursive: true }); fs.mkdirSync(P.language, { recursive: true }); }
+// What trail keeps quotes your prompts and your agents' words: readable by you only.
+const DIR_MODE = 0o700, FILE_MODE = 0o600;
+export function ensure() { for (const d of [HOME, P.sessions, P.language]) { fs.mkdirSync(d, { recursive: true, mode: DIR_MODE }); try { fs.chmodSync(d, DIR_MODE); } catch {} } }
+const writePrivate = (p, data) => { fs.writeFileSync(p, data, { mode: FILE_MODE }); try { fs.chmodSync(p, FILE_MODE); } catch {} };
 const readJSON = (p, d) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return d; } };
 export function loadIndex(rebuild) { const i = rebuild ? null : readJSON(P.index, null); return i && i.version === VERSION ? i : { version: VERSION, files: {} }; }
 export function saveIndex(i) { fs.writeFileSync(P.index, JSON.stringify(i)); }
-export function writeSession(s) { fs.writeFileSync(path.join(P.sessions, s.id + '.json'), JSON.stringify(s)); }
+export function writeSession(s) { writePrivate(path.join(P.sessions, s.id + '.json'), JSON.stringify(redactDeep(s))); }
 /**
  * The language the session record leaves out: reasoning (Claude thinking, Codex summaries) and full agent messages.
  * Kept per session beside the record so the explorer never loads it; step tagging and deep views read it on demand.
  * `reasoning[].i` is the event the reasoning precedes; `full` is [eventIndex, text] for messages longer than the cut.
  */
-export function writeLanguage(id, lang) { fs.mkdirSync(P.language, { recursive: true }); fs.writeFileSync(path.join(P.language, id + '.json'), JSON.stringify(lang)); }
+export function writeLanguage(id, lang) { fs.mkdirSync(P.language, { recursive: true, mode: DIR_MODE }); writePrivate(path.join(P.language, id + '.json'), JSON.stringify(redactDeep(lang))); }
+/**
+ * One pass over everything already stored: redact secrets and make files private. Runs when the store version
+ * changes, because records whose transcripts are gone (Claude Code deletes them after 30 days) are never re-read.
+ */
+export function hardenStore() {
+  ensure(); let files = 0, changed = 0;
+  for (const dir of [P.sessions, P.language]) for (const n of fs.readdirSync(dir)) {
+    if (!n.endsWith('.json')) continue; const p = path.join(dir, n); files++;
+    const before = fs.readFileSync(p, 'utf8'); let after = before;
+    try { after = JSON.stringify(redactDeep(JSON.parse(before))); } catch { continue; }
+    if (after !== before) { changed++; writePrivate(p, after); } else { try { fs.chmodSync(p, FILE_MODE); } catch {} }
+  }
+  for (const p of [P.index, P.adoptions, P.labels, P.summary]) { try { fs.chmodSync(p, FILE_MODE); } catch {} }
+  return { files, changed };
+}
 export const loadLanguage = (id) => readJSON(path.join(P.language, id + '.json'), { reasoning: [], full: [] });
 export function loadSessions() {
   let names = []; try { names = fs.readdirSync(P.sessions); } catch { return []; }

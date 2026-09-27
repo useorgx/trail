@@ -1,13 +1,17 @@
 // Scan transcripts in parallel, reading only what changed since the last scan.
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { discover, loadIndex, saveIndex, writeSession, ensure } from './store.mjs';
+import fs from 'node:fs';
+import { discover, loadIndex, saveIndex, writeSession, ensure, hardenStore, P, VERSION } from './store.mjs';
 
 const WORKER = new URL('./worker.mjs', import.meta.url);
 
 /** @param {{since?:Date, client?:string, rebuild?:boolean, onSession?:(s:any)=>void, onProgress?:(p:any)=>void}} o */
 export async function scan(o = {}) {
   ensure();
+  // A new store version re-reads every transcript still on disk; harden what can't be re-read first.
+  let stored = null; try { stored = JSON.parse(fs.readFileSync(P.index, 'utf8')).version; } catch {}
+  if (stored && stored !== VERSION) hardenStore();
   const index = loadIndex(o.rebuild);
   const all = discover(o);
   const todo = all.filter((f) => { const c = index.files[f.file]; return !c || c.size !== f.size || c.mtimeMs !== f.mtimeMs; });

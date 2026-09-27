@@ -14,6 +14,7 @@ import { threadify } from './classify.mjs';
 import { buildGoals, GOAL_JEV, goalKey } from './goals.mjs';
 import { renderEvidence } from './evidence.mjs';
 import { credential, baseUrl } from './sync.mjs';
+import { redact } from './redact.mjs';
 
 export const JEV_CACHE = path.join(HOME, 'steptags-jev.json');
 export const textKey = (text) => crypto.createHash('sha1').update(String(text)).digest('hex').slice(0, 16);
@@ -102,11 +103,11 @@ export async function deepen(o) {
     for (const x of st) {
       if ((x.kind !== 'say' && x.kind !== 'think') || (x.text || '').length < 20) continue;
       const k = textKey(x.text); if (cache[k] || stepItems.has(k)) continue;
-      stepItems.set(k, { id: k, kind: 'step', step_kind: x.kind, text: x.text.slice(0, 4000) }); fileOf.set(k, s.file);
+      stepItems.set(k, { id: k, kind: 'step', step_kind: x.kind, text: redact(x.text).slice(0, 4000) }); fileOf.set(k, s.file);
     }
     for (const g of buildGoals(ev, threadify(ev), st, { sessionId: s.id })) {
       const k = goalKey(s.id, g); if (gcache[k]) continue;
-      goalItems.push({ id: crypto.createHash('sha1').update(k).digest('hex').slice(0, 16), kind: 'goal', evidence: renderEvidence(ev, g.spans, 16000, null), _k: k }); fileOf.set(k, s.file);
+      goalItems.push({ id: crypto.createHash('sha1').update(k).digest('hex').slice(0, 16), kind: 'goal', evidence: redact(renderEvidence(ev, g.spans, 16000, null)), _k: k }); fileOf.set(k, s.file);
     }
   }
   const counts = { steps: stepItems.size, goals: goalItems.length };

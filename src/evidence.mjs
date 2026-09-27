@@ -1,3 +1,5 @@
+import { redact } from './redact.mjs';
+
 // Evidence text for a set of event spans: numbered events a reviewer (person, Jev, a model) reads to judge a
 // thread or goal. Shared by the lab (frozen at sampling) and `trail deepen` (goal outcomes).
 
@@ -29,5 +31,5 @@ export function renderEvidence(s, spans, cap = 14000, language = null) {
   lines.push(remaining <= 0 ? `[end] The session transcript ends at this thread's last event [${last}].` : `[end] This thread's last event is [${last}]. The session continued for ${remaining} more events (other threads; the first ${Math.min(3, remaining)} are shown with ~).`);
   let text = lines.join('\n');
   if (text.length > cap) { const head = text.slice(0, cap * 0.55); const tail = text.slice(-cap * 0.4); text = `${head}\n… [${lines.length} events total; middle omitted] …\n${tail}`; }
-  return text;
+  return redact(text);
 }

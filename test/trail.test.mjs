@@ -249,3 +249,16 @@ test('deepen via OrgX credits: quotes from counts, sends nothing if declined, st
     assert.equal(again.nothing, true, 'answers are cached: a second run sends nothing');
   } finally { server.close(); }
 });
+
+test('secrets are redacted before anything is stored, and stored files are private', async () => {
+  const { redact } = await import('../src/redact.mjs');
+  const fake = 'sk-or-v1-' + 'a'.repeat(40);
+  assert.equal(redact(`curl -H "Authorization: Bearer ${'b'.repeat(40)}" and key ${fake}`).includes('a'.repeat(20)), false);
+  assert.match(redact(`OPENROUTER_API_KEY=${'c'.repeat(30)}`), /OPENROUTER_API_KEY=\[redacted\]/);
+  assert.equal(redact('the task-runner and desk-chair stay'), 'the task-runner and desk-chair stay', 'ordinary words are untouched');
+  const { writeSession, P } = await import('../src/store.mjs');
+  writeSession({ id: 'redact-test', threads: [{ ask: `use ${fake} please` }] });
+  const f = path.join(P.sessions, 'redact-test.json');
+  assert.equal(fs.readFileSync(f, 'utf8').includes(fake), false);
+  assert.equal(fs.statSync(f).mode & 0o077, 0, 'readable by the owner only');
+});
