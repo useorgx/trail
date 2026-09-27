@@ -40,7 +40,7 @@ const HELP = `orgx trail — read your Claude Code and Codex history into thread
   trail watch        follow the session being written right now
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
-  trail deepen       opt-in: Jev tags each step for sharper goals (needs an OpenRouter key; sends step text; ~$0.00003/step)
+  trail deepen       opt-in: Jev reads steps and goals for surer outcomes · OrgX credits (after trail connect) or --key-file · quotes first
   trail goals        each piece of work: its detours, how it ended, where it changed course   (--json)
   trail walls        the walls your agents keep hitting, each with a fix   (--json for agents)
   trail adopt <id>   write a wall's fix into AGENTS.md / CLAUDE.md          (--to <file>)
@@ -66,11 +66,26 @@ else if (cmd === 'explore') await explore();
 else if (cmd === 'watch') await watch(opts);
 else if (cmd === 'open') await serve({ port: +(val('port') || 4747) });
 else if (cmd === 'deepen') {
-  // Opt-in: Jev tags each language step (paid, sends step text to OpenRouter/TypeSafe), then goals are rebuilt.
-  const { deepen, readKey } = await import('../src/deepen.mjs');
-  const key = readKey(val('key-file')); if (!key) { console.error('trail deepen is opt-in and needs an OpenRouter key: set OPENROUTER_API_KEY or pass --key-file <env file>.'); process.exitCode = 2; }
-  else try { const r = await deepen({ key, limit: val('limit') ? +val('limit') : undefined, onProgress: (p) => process.stderr.write(`  ${p.done}/${p.total} steps · $${p.cost.toFixed(4)}\r`) });
-    console.log(`Jev tagged ${r.steps} steps and read ${r.goals} goals in ${r.sessions} sessions ($${r.cost.toFixed(4)}${r.failed + r.goalsFailed ? `, ${r.failed + r.goalsFailed} failed` : ''}). Rebuilding goals…`); await scanView({ ...opts, plain: true }); } catch (e) { console.error(e.message); process.exitCode = 1; }
+  // Opt-in: Jev tags each language step and reads each goal's outcome; goals are then rebuilt. Paid either with your
+  // own OpenRouter key or with OrgX credits (after `trail connect`). Always shows what it will send and cost first.
+  const { deepen, pickProvider } = await import('../src/deepen.mjs');
+  const provider = pickProvider({ keyFile: val('key-file'), base: val('base') });
+  if (!provider) { console.error('trail deepen is opt-in. Either run `trail connect` to pay with OrgX credits, or pass --key-file <env file> (or set OPENROUTER_API_KEY) to use your own OpenRouter key.'); process.exitCode = 2; }
+  else try {
+    const confirm = async (q) => {
+      const cost = q.credits != null ? `${q.credits} credits ($${q.usd.toFixed(2)}); you have ${q.available}` : `about $${q.usd.toFixed(2)} on your OpenRouter account`;
+      console.log(`\n  trail deepen via ${provider.name}: ${q.steps.toLocaleString()} steps and ${q.goals.toLocaleString()} goals · ${cost}`);
+      console.log(`  Sends agent messages, reasoning and goal evidence to ${provider.name === 'OrgX credits' ? 'OrgX, which asks Jev (TypeSafe) and does not keep them' : 'OpenRouter/TypeSafe'}. Nothing else leaves this machine.`);
+      if (q.enough === false) { console.log(`  Not enough credits: buy a pack at ${q.buy_url?.startsWith('http') ? q.buy_url : (val('base') || 'https://useorgx.com') + q.buy_url}`); return false; }
+      if (flag('yes')) return true;
+      const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout });
+      const a = await new Promise((res) => rl.question('  Continue? [y/N] ', res)); rl.close(); return /^y(es)?$/i.test(a.trim());
+    };
+    const r = await deepen({ provider, limit: val('limit') ? +val('limit') : undefined, confirm, onProgress: (p) => process.stderr.write(`  ${p.done}/${p.total}${p.charged != null ? ` · ${p.charged} credits` : ` · $${(p.cost || 0).toFixed(4)}`}\r`) });
+    if (r.nothing) console.log('Nothing new to deepen: every step and goal already has an answer.');
+    else if (r.cancelled) console.log('Cancelled. Nothing was sent.');
+    else { console.log(`\nJev answered for ${r.steps} steps and ${r.goals} goals in ${r.sessions} sessions (${r.charged != null ? `${r.charged} credits` : `$${(r.cost || 0).toFixed(4)}`}). Rebuilding goals…`); await scanView({ ...opts, plain: true }); }
+  } catch (e) { console.error(e.message); process.exitCode = 1; }
 }
 else if (cmd === 'goals') {
   // Goals: one per ask, detours inside, outcome read from the steps (src/goals.mjs).

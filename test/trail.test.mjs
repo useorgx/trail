@@ -214,3 +214,38 @@ test('steps and goals: a recovery stays inside its goal, outcome and backtrack p
   assert.equal(goals[0].outcome.kind, 'shipped_checked'); assert.equal(goals[0].outcome.at, 7);
   assert.equal(goals[0].backtracks.length, 1); assert.equal(goals[0].backtracks[0].at, 3); assert.equal(goals[0].backtracks[0].trigger, 'error');
 });
+
+test('deepen via OrgX credits: quotes from counts, sends nothing if declined, stops with a buy link when short', async () => {
+  const http = await import('node:http');
+  const { deepen, orgxProvider, OutOfCredits } = await import('../src/deepen.mjs');
+  // A session record pointing at the Claude fixture, so deepen has real steps and goals to count.
+  fs.mkdirSync(path.join(tmp, 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'sessions', 'fx-deepen.json'), JSON.stringify({ id: 'fx-deepen', client: 'claude', file: fx('claude.jsonl'), start: '2026-09-27T00:00:00Z', threads: [] }));
+  const calls = []; let available = 1000;
+  const server = http.createServer((req, res) => { let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
+    const body = JSON.parse(b || '{}'); calls.push({ path: req.url, auth: req.headers.authorization, body });
+    const send = (status, o) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (req.url === '/api/v1/trail/deepen/quote') { const credits = Math.ceil(body.steps / 40 + body.goals / 4); return send(200, { ok: true, data: { ...body, credits, usd: credits * 0.02, available, enough: available >= credits, buy_url: '/settings/billing', configured: true } }); }
+    if (req.url === '/api/v1/trail/deepen') { if (available <= 0) return send(402, { ok: false, available: 0, buy_url: '/settings/billing' }); available -= 1;
+      return send(200, { ok: true, data: { answers: Object.fromEntries(body.items.map((i) => [i.id, i.kind === 'step' ? ['plan', 0.9] : ['done', 0.9]])), charged: 1, failed: 0, remaining: available } }); }
+    send(404, {}); }); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r)); const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const declined = await deepen({ provider: orgxProvider({ key: 'oxk_test', base }), sessions: ['fx-deepen'], confirm: async () => false });
+    assert.equal(declined.cancelled, true);
+    assert.deepEqual(calls.map((c) => c.path), ['/api/v1/trail/deepen/quote'], 'declining sends counts only');
+    assert.deepEqual(Object.keys(calls[0].body).sort(), ['goals', 'steps'], 'the quote carries no text');
+    assert.equal(calls[0].auth, 'Bearer oxk_test');
+    available = 0; calls.length = 0;
+    await assert.rejects(deepen({ provider: orgxProvider({ key: 'oxk_test', base }), sessions: ['fx-deepen'], confirm: async () => true }), (e) => e instanceof OutOfCredits && /settings\/billing/.test(e.message));
+    assert.deepEqual(calls.map((c) => c.path), ['/api/v1/trail/deepen/quote'], 'not enough credits: nothing is sent');
+    available = 1000; calls.length = 0;
+    const r = await deepen({ provider: orgxProvider({ key: 'oxk_test', base }), sessions: ['fx-deepen'], confirm: async () => true });
+    assert.ok(r.charged >= 1 && calls.some((c) => c.path === '/api/v1/trail/deepen'));
+    const sent = calls.filter((c) => c.path === '/api/v1/trail/deepen').flatMap((c) => c.body.items);
+    assert.ok(sent.every((i) => (i.kind === 'step' && i.text) || (i.kind === 'goal' && i.evidence)), 'items carry only step text or goal evidence');
+    assert.ok(new Set(calls.filter((c) => c.path === '/api/v1/trail/deepen').map((c) => c.body.batch_id)).size === calls.filter((c) => c.path === '/api/v1/trail/deepen').length, 'every batch has its own id');
+    const again = await deepen({ provider: orgxProvider({ key: 'oxk_test', base }), sessions: ['fx-deepen'], confirm: async () => true });
+    assert.equal(again.nothing, true, 'answers are cached: a second run sends nothing');
+  } finally { server.close(); }
+});

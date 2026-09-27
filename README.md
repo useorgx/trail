@@ -18,7 +18,7 @@ npx @useorgx/trail
 |---|---|
 | `trail` | read new work, then open the explorer (overview · walls · threads · sessions · quality) |
 | `trail goals` | each piece of work as one goal: its detours (recoveries, walls, discoveries), how it ended, where it changed course (`--json`) |
-| `trail deepen` | opt-in: Jev (TypeSafe, via OpenRouter) tags each step for sharper outcomes; needs your OpenRouter key and sends step text (~$0.00003 a step) |
+| `trail deepen` | opt-in: Jev (TypeSafe's decision model) reads each step and each goal; an outcome both it and the steps agree on is marked verified. Pay with OrgX credits after `trail connect` (shows a quote from counts first; OrgX passes the text to Jev and keeps none of it) or with your own OpenRouter key (`--key-file`). Nothing is sent until you confirm. |
 | `trail walls` | the walls your agents keep hitting, each with a fix (`--json` for agents) |
 | `trail copy <id>` | copy a fix: a prompt your agent can act on (default), the rule, or the command |
 | `trail adopt <id>` | write the fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
