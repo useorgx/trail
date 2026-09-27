@@ -94,9 +94,13 @@ export function gitState() {
 export function readJSONL(p) { try { return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } }
 export const appendJSONL = (p, o) => fs.appendFileSync(p, JSON.stringify(o) + '\n');
 
-/** Latest human label per key; repeats kept apart for self-consistency. */
-export function goldByKey() {
-  const all = readJSONL(L.gold); const gold = new Map(); const repeats = [];
+/**
+ * Latest label per key from one labeler kind; repeats kept apart for self-consistency.
+ * Gold means a person: labels written before the labeler field existed were made by Codex (2026-09-27) and are
+ * marked `codex`. `labeler: 'any'` returns every label, for queueing the bench only.
+ */
+export function goldByKey({ labeler = 'human' } = {}) {
+  const all = readJSONL(L.gold).filter((g) => labeler === 'any' || (g.labeler || 'codex') === labeler); const gold = new Map(); const repeats = [];
   for (const g of all) { if (g.repeat) repeats.push(g); else gold.set(g.key, g); }
   return { gold, repeats, all };
 }

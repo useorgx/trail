@@ -53,7 +53,7 @@ async function load() {
   if (cur.done) { document.getElementById('ev').textContent = `All caught up. ${cur.labeled} threads labeled.`; return; }
   const p = cur.progress; document.getElementById('prog').textContent = `${p.labeled} labeled · ${p.left} left · ${p.repeats} repeats`;
   document.getElementById('pbar').style.width = (100 * p.labeled / Math.max(p.total, 1)) + '%';
-  document.getElementById('where').innerHTML = `${esc(cur.project)} · ${cur.client} · ${new Date(cur.start).toLocaleDateString()} ${cur.repeat ? '<span class="tag rep">blind</span>' : cur.blind ? '<span class="tag">blind</span>' : ''}`;
+  document.getElementById('where').innerHTML = `<span class="tag">${esc(cur.labeler)}</span> ${esc(cur.project)} · ${cur.client} · ${new Date(cur.start).toLocaleDateString()} ${cur.repeat ? '<span class="tag rep">blind</span>' : cur.blind ? '<span class="tag">blind</span>' : ''}`;
   document.getElementById('ev').innerHTML = renderEvidence(cur.evidence); document.getElementById('ev').scrollTop = 0;
   sel = cur.prefill ? { boundary: cur.prefill.boundary, origin: cur.prefill.origin, status: cur.prefill.status, titleok: 'ok' } : { titleok: 'ok' };
   document.getElementById('btBox').hidden = !cur.depth;

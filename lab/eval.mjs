@@ -9,14 +9,16 @@ import { decide } from '../src/decide.mjs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i >= 0 ? process.argv[i + 1] : d; };
 const labeler = arg('labeler', 'trail'); const which = arg('split', 'dev'); const quiet = process.argv.includes('--quiet');
+// Whose labels are the reference. Default is a person; `--gold-from codex` scores against Codex's labels (silver).
+const goldFrom = arg('gold-from', 'human');
 if (which === 'test') {
   const reason = arg('reason'); if (!reason) { console.error('The test split is sealed. Pass --reason "<why this run counts>"; every test run is logged.'); process.exit(2); }
   appendJSONL(L.testLog, { at: new Date().toISOString(), labeler, reason, code: gitState() });
   console.log(`Test access #${readJSONL(L.testLog).length} logged.`);
 }
-const { gold, repeats } = goldByKey();
+const { gold, repeats } = goldByKey({ labeler: goldFrom });
 const items = allBatchItems().filter((i) => gold.has(i.key) && i.split === which && gold.get(i.key).boundary !== 'not_a_thread');
-if (!items.length) { console.log(`No gold labels on the ${which} split yet. Label with: node lab/serve.mjs`); process.exit(0); }
+if (!items.length) { console.log(`No ${goldFrom} labels on the ${which} split yet. Label with: node lab/serve.mjs --as human${goldFrom === 'human' ? '  (Codex labels exist: --gold-from codex scores against them as silver)' : ''}`); process.exit(0); }
 
 // Predictions from the chosen labeler, keyed like gold.
 const juryOf = (m, it) => { try { return JSON.parse(fs.readFileSync(path.join(L.jury, m, safeName(it.key) + '.json'), 'utf8')).label; } catch { return null; } };
@@ -25,6 +27,7 @@ const pred = new Map(); const sessCache = new Map();
 for (const it of items) {
   if (labeler === 'trail') {
     // Re-run the current classifier on the transcript and find the thread that owns the anchor event.
+    if (!fs.existsSync(it.file)) { pred.set(it.key, null); continue; } // transcript deleted since sampling
     let r = sessCache.get(it.file); if (!r) { const s = await readSession(it.file, it.client); r = threadify(s); r.threads.forEach(decide); sessCache.set(it.file, r); }
     const t = r.threads.find((x) => x.spans?.some(([a, b]) => it.anchor >= a && it.anchor <= b));
     const own = new Set(); for (const [a, b] of it.spans) for (let i = a; i <= b; i++) own.add(i);
@@ -35,13 +38,15 @@ for (const it of items) {
     try { const m = JSON.parse(fs.readFileSync(path.join(L.jury, '..', 'labelers', labeler.slice(6), safeName(it.key) + '.json'), 'utf8')); pred.set(it.key, { origin: m.origin, status: m.status }); } catch { pred.set(it.key, null); }
   } else if (labeler.startsWith('jury:')) {
     const m = labeler.slice(5);
-    if (m === 'majority') { const js = ['haiku', 'sonnet', 'opus'].map((x) => juryOf(x, it)); pred.set(it.key, { origin: vote(js.map((j) => j?.origin)), status: vote(js.map((j) => j?.status)), boundary: vote(js.map((j) => j?.boundary)) }); }
+    if (m === 'majority') { const js = ['haiku', 'sonnet', 'opus'].map((x) => juryOf(x, it)); if (!js.some(Boolean)) { pred.set(it.key, null); continue; } pred.set(it.key, { origin: vote(js.map((j) => j?.origin)), status: vote(js.map((j) => j?.status)), boundary: vote(js.map((j) => j?.boundary)) }); }
     else pred.set(it.key, juryOf(m, it));
   }
 }
 
 const fields = ['origin', 'status'].concat(labeler.startsWith('jury') ? ['boundary'] : []);
-const res = { n: items.length }; const errors = [];
+// Score only threads this labeler actually labeled (the jury never saw depth batches; some transcripts are gone).
+const allN = items.length; items.splice(0, items.length, ...items.filter((it) => pred.get(it.key)));
+const res = { n: items.length, coverage: `${items.length}/${allN}` }; const errors = [];
 for (const f of fields) {
   let ok = 0, n = 0; const conf = {};
   for (const it of items) { const g = gold.get(it.key)[f]; const p = pred.get(it.key)?.[f]; if (g == null) continue; n++; if (p === g) ok++; else errors.push({ key: it.key, field: f, gold: g, pred: p ?? '—', project: it.project, client: it.client }); conf[`${g}→${p ?? '—'}`] = (conf[`${g}→${p ?? '—'}`] || 0) + 1; }
@@ -58,13 +63,13 @@ if (labeler === 'trail') res.boundary = { acc: +(items.filter((it) => gold.get(i
 const selfPairs = repeats.map((r) => ({ r, g: gold.get(r.key) })).filter((x) => x.g);
 res.self = selfPairs.length ? Object.fromEntries(['origin', 'status', 'boundary'].map((f) => [f, +(selfPairs.filter((x) => x.r[f] === x.g[f]).length / selfPairs.length).toFixed(3)])) : null;
 res.selfN = selfPairs.length;
-const row = { at: new Date().toISOString(), labeler, split: which, code: gitState(), ...res };
+const row = { at: new Date().toISOString(), labeler, gold_from: goldFrom, split: which, code: gitState(), ...res };
 appendJSONL(L.experiments, row);
 if (!quiet) {
-  console.log(`\n${labeler} on ${which} (${items.length} gold threads) — code ${row.code.sha}${row.code.dirty ? '+dirty' : ''}`);
+  console.log(`\n${labeler} on ${which} vs ${goldFrom === 'human' ? 'your labels' : goldFrom + ' labels (silver, not your judgment)'} (${items.length} of ${allN} threads labeled by it) — code ${row.code.sha}${row.code.dirty ? '+dirty' : ''}`);
   for (const f of [...fields, ...(labeler === 'trail' ? ['boundary'] : [])]) console.log(`  ${f.padEnd(9)} ${(res[f].acc * 100).toFixed(1)}%`);
   if (res.backtracks) console.log(`  backtracks precision ${(res.backtracks.precision * 100).toFixed(0)}% · recall ${(res.backtracks.recall * 100).toFixed(0)}% (${res.backtracks.n} threads)`);
-  if (res.self) console.log(`  your own consistency on ${res.selfN} repeats: origin ${res.self.origin * 100}% · status ${res.self.status * 100}% · boundary ${res.self.boundary * 100}%`);
+  if (res.self) console.log(`  ${goldFrom === 'human' ? 'your own' : goldFrom + '’s'} consistency on ${res.selfN} repeats: origin ${res.self.origin * 100}% · status ${res.self.status * 100}% · boundary ${res.self.boundary * 100}%`);
   const top = {}; for (const e of errors) top[`${e.field}: ${e.gold} labeled as ${e.pred}`] = (top[`${e.field}: ${e.gold} labeled as ${e.pred}`] || 0) + 1;
   if (which === 'test') { console.log('  (test split: per-thread misses are not shown)'); } else console.log('  most common misses:'); if (which === 'dev') for (const [k, v] of Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 8)) console.log(`    ${String(v).padStart(3)}  ${k}`);
 }

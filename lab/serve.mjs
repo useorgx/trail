@@ -10,6 +10,9 @@ import { L, ensureLab, safeName, allBatchItems, readJSONL, appendJSONL, goldByKe
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i >= 0 ? process.argv[i + 1] : d; };
 const PORT = +arg('port', 4748); const BLIND = process.argv.includes('--blind');
+// Who is labeling, stated when the bench starts. Only `human` labels count as gold; an agent driving this page
+// (Codex, Claude) must be started as itself so its labels stay silver.
+const AS = arg('as', ''); if (!/^(human|codex|claude|[a-z][\w.-]{1,40})$/.test(AS)) { console.error('Say who is labeling: node lab/serve.mjs --as human   (or --as codex / --as claude for an agent)'); process.exit(2); }
 const token = process.env.TRAIL_TOKEN || crypto.randomBytes(12).toString('hex');
 ensureLab();
 const PAGE = fs.readFileSync(new URL('./label.html', import.meta.url), 'utf8');
@@ -18,7 +21,7 @@ const jury = (it) => MODELS.map((m) => { try { return { model: m, ...JSON.parse(
 const vote = (xs) => { const c = {}; for (const x of xs) c[x] = (c[x] || 0) + 1; return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0]; };
 
 function next() {
-  const items = allBatchItems(); const { gold, repeats, all } = goldByKey();
+  const items = allBatchItems(); const { gold, repeats, all } = goldByKey({ labeler: AS });
   // Most informative first: threads where the jury splits, then the rest. Unanimous items go fast with the prefill.
   const split = (i) => { const j = jury(i); if (j.length < 2) return 0; return ['boundary', 'origin', 'status'].reduce((a, f) => a + (new Set(j.map((x) => x[f])).size - 1), 0); };
   // Depth batches (the backtrack gold set) come first, then threads where the jury splits.
@@ -33,7 +36,7 @@ function next() {
   const prefill = blind || !j.length ? null : { boundary: vote(j.map((x) => x.boundary)), origin: vote(j.map((x) => x.origin)), status: vote(j.map((x) => x.status)), title: j.find((x) => x.model === 'opus')?.title || j[0].title };
   return { key: it.key, repeat, blind, depth: !!it.depth, project: it.project, client: it.client, start: it.start, split: it.split, siblings: it.siblings, pred: it.pred,
     evidence: fs.readFileSync(path.join(L.evidence, safeName(it.key) + '.txt'), 'utf8'), jury: blind ? [] : j, prefill,
-    progress: { labeled: gold.size, left: fresh.length, repeats: repeats.length, total: items.length } };
+    labeler: AS, progress: { labeled: gold.size, left: fresh.length, repeats: repeats.length, total: items.length } };
 }
 
 const server = http.createServer((req, res) => {
@@ -47,13 +50,13 @@ const server = http.createServer((req, res) => {
     let body = ''; req.on('data', (d) => (body += d)); req.on('end', () => {
       try { const b = JSON.parse(body); if (!b.key || !b.origin || !b.status || !b.boundary) throw new Error('missing field');
         if (b.backtracks != null && !['0', '1', '2', '3+'].includes(b.backtracks)) throw new Error('bad backtracks');
-        appendJSONL(L.gold, { key: b.key, at: new Date().toISOString(), boundary: b.boundary, origin: b.origin, status: b.status, title_ok: !!b.title_ok, title: String(b.title || '').slice(0, 120), note: String(b.note || '').slice(0, 500), ...(b.backtracks != null ? { backtracks: b.backtracks } : {}), repeat: !!b.repeat, blind: !!b.blind, prefill: b.prefill || null, seconds: +b.seconds || null });
+        appendJSONL(L.gold, { key: b.key, labeler: AS, at: new Date().toISOString(), boundary: b.boundary, origin: b.origin, status: b.status, title_ok: !!b.title_ok, title: String(b.title || '').slice(0, 120), note: String(b.note || '').slice(0, 500), ...(b.backtracks != null ? { backtracks: b.backtracks } : {}), repeat: !!b.repeat, blind: !!b.blind, prefill: b.prefill || null, seconds: +b.seconds || null });
         json({ ok: true }); } catch (e) { res.writeHead(400).end(String(e)); }
     });
   } else res.writeHead(404).end();
 });
 server.listen(PORT, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${PORT}/?k=${token}`;
-  console.log(`  Labeling bench: ${url}\n  Gold labels → ${L.gold}`);
+  console.log(`  Labeling bench (${AS}${AS === 'human' ? ', counts as gold' : ', silver: never scored as your judgment'}): ${url}\n  Labels → ${L.gold}`);
   if (!process.env.TRAIL_NO_OPEN && process.platform === 'darwin') execFile('open', [url]);
 });
