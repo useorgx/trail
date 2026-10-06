@@ -17,6 +17,10 @@ export const P = {
   summary: path.join(HOME, 'summary.json'),
   language: path.join(HOME, 'language'),
   receipts: path.join(HOME, 'receipts'),
+  // Judgment signals (corrections, rejections, denials, stated rules): local precedent candidates, append-only JSONL.
+  signals: path.join(HOME, 'precedent-candidates.jsonl'),
+  // Optional: which OrgX precedents governed a session or receipt, keyed by session id or receipt id.
+  governed: path.join(HOME, 'precedents-governed.json'),
 };
 // What trail keeps quotes your prompts and your agents' words: readable by you only.
 const DIR_MODE = 0o700, FILE_MODE = 0o600;
@@ -44,7 +48,7 @@ export function hardenStore() {
     try { after = JSON.stringify(redactDeep(JSON.parse(before))); } catch { continue; }
     if (after !== before) { changed++; writePrivate(p, after); } else { try { fs.chmodSync(p, FILE_MODE); } catch {} }
   }
-  for (const p of [P.index, P.adoptions, P.labels, P.summary]) { try { fs.chmodSync(p, FILE_MODE); } catch {} }
+  for (const p of [P.index, P.adoptions, P.labels, P.summary, P.signals]) { try { fs.chmodSync(p, FILE_MODE); } catch {} }
   return { files, changed };
 }
 /** Agent Work Receipts for one session's pieces of work (src/receipt.mjs), redacted like everything stored. */
@@ -63,6 +67,28 @@ export const loadAdoptions = () => readJSON(P.adoptions, []);
 export const saveAdoptions = (a) => fs.writeFileSync(P.adoptions, JSON.stringify(a, null, 1));
 export function loadLabels() { try { return fs.readFileSync(P.labels, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } }
 export const appendLabel = (l) => fs.appendFileSync(P.labels, JSON.stringify(l) + '\n');
+
+/** Every stored judgment signal, one per signalId (the first written wins; the file is append-only). */
+export function loadSignals() {
+  let raw = ''; try { raw = fs.readFileSync(P.signals, 'utf8'); } catch { return []; }
+  const seen = new Set(); const out = [];
+  for (const l of raw.split('\n')) { if (!l) continue; let x; try { x = JSON.parse(l); } catch { continue; } if (x?.signalId && !seen.has(x.signalId)) { seen.add(x.signalId); out.push(x); } }
+  return out;
+}
+/** Append signals not already in the file (idempotent on signalId), redacted like everything stored. Returns how many were new. */
+export function appendSignals(signals) {
+  if (!signals?.length) return 0;
+  fs.mkdirSync(HOME, { recursive: true, mode: DIR_MODE });
+  const have = new Set(loadSignals().map((x) => x.signalId)); const fresh = [];
+  for (const x of signals) if (x?.signalId && !have.has(x.signalId)) { have.add(x.signalId); fresh.push(JSON.stringify(redactDeep(x))); }
+  if (fresh.length) { fs.appendFileSync(P.signals, fresh.join('\n') + '\n', { mode: FILE_MODE }); try { fs.chmodSync(P.signals, FILE_MODE); } catch {} }
+  return fresh.length;
+}
+/**
+ * Precedents that governed a piece of work, until OrgX returns them in the brief: an optional local file mapping a
+ * session id or receipt id to [{ claimId, version }]. Missing or unreadable means none are known.
+ */
+export function loadGoverned() { const g = readJSON(P.governed, null); return g && typeof g === 'object' && !Array.isArray(g) ? g : {}; }
 
 /** Find transcripts written by each supported client. */
 export function discover({ since, client } = {}) {

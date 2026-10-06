@@ -35,7 +35,7 @@ npx @useorgx/trail
 | `trail connect` | sign in to OrgX through [`@useorgx/wizard`](https://www.npmjs.com/package/@useorgx/wizard); trail never handles your password or key |
 | `trail credits` | the people whose work trail is built on |
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
-| `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first |
+| `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first. Also sends the judgments you made along the way (corrections, rejected tool calls, denials, rules you stated) so OrgX can turn them into precedents; they are kept locally in `~/.orgx/trail/precedent-candidates.jsonl` until then |
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 

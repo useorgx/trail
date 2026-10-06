@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { loadSessions, loadAdoptions, HOME, VERSION } from './store.mjs';
+import { loadSessions, loadAdoptions, loadSignals, HOME, VERSION } from './store.mjs';
 import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
 import { wallById } from './walls.mjs';
@@ -168,7 +168,9 @@ export async function syncReceipts({ dryRun = false, base, limit = 50, since } =
   }
   const root = baseUrl(base); const url = `${root}/api/v1/agent-work-receipts`;
   const privacy = piiEnabled() ? 'receipts (secrets redacted, personal data masked)' : 'receipts (secrets redacted; personal-data masking off — trail privacy --pii on)';
-  if (dryRun) return { dryRun: true, url, privacy, receipts: todo.length, pending: L.receipts.length - Object.keys(state.receipts).length, example: todo[0] ?? null };
+  state.signalsSent ||= {};
+  const signals = unsentSignals(state);
+  if (dryRun) return { dryRun: true, url, privacy, receipts: todo.length, pending: L.receipts.length - Object.keys(state.receipts).length, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
   const cred = credential();
   if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
   if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
@@ -190,5 +192,37 @@ export async function syncReceipts({ dryRun = false, base, limit = 50, since } =
     save(); i += chunk.length;
     if (!res.ok && !batch && res.status >= 500) break;
   }
-  return { dryRun: false, url, credential: cred.from, receipts: sent, duplicate, refused, privacy, remaining: L.receipts.length - Object.keys(state.receipts).length };
+  const sig = await sendSignals({ root, headers, state, save, signals });
+  return { dryRun: false, url, credential: cred.from, receipts: sent, duplicate, refused, privacy, remaining: L.receipts.length - Object.keys(state.receipts).length, signals: sig };
+}
+
+// ---- precedent signals: the judgments a person made (corrections, rejections, denials, stated rules) --------------
+// Sent with receipts (same opt-in, same key, same base URL), because they carry the person's own words. OrgX turns them
+// into precedent candidates; the server is idempotent on signalId, and trail marks what it sent so it is not resent.
+export const SIGNALS_PATH = '/api/v1/precedents/signals';
+const SIGNAL_BATCH = 100;
+function unsentSignals(state) {
+  let out = loadSignals().filter((x) => !state.signalsSent?.[x.signalId]);
+  if (piiEnabled() && out.length) {
+    out = JSON.parse(JSON.stringify(out)); const slots = out.flatMap((x) => [[x, 'text'], ...(x.priorAction?.summary ? [[x.priorAction, 'summary']] : [])]);
+    const masked = maskPii(slots.map(([o, k]) => o[k])); slots.forEach(([o, k], i) => { o[k] = masked[i]; });
+  }
+  return out;
+}
+/** POST unsent signals in batches of 100. A 404 means this OrgX does not take signals yet: keep them, no error. */
+export async function sendSignals({ root, headers, state, save = () => {}, signals, fetchImpl = fetch }) {
+  state.signalsSent ||= {};
+  const out = { url: `${root}${SIGNALS_PATH}`, sent: 0, pending: signals.length, unsupported: false, error: null };
+  for (let i = 0; i < signals.length;) {
+    const chunk = signals.slice(i, i + SIGNAL_BATCH);
+    let res;
+    try { res = await fetchImpl(out.url, { method: 'POST', headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
+    if (res.status === 404) { out.unsupported = true; break; }
+    if (res.status === 429) { const wait = Math.min(65, +(res.headers?.get?.('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (!res.ok) { const b = await res.json().catch(() => ({})); out.error = `${res.status} ${b.error?.code || b.error || 'refused'}`.slice(0, 200); break; }
+    const at = new Date().toISOString(); for (const x of chunk) state.signalsSent[x.signalId] = at;
+    out.sent += chunk.length; save(); i += chunk.length;
+  }
+  out.pending = signals.length - out.sent;
+  return out;
 }

@@ -7,9 +7,10 @@ import { threadify } from './classify.mjs';
 import { decide } from './decide.mjs';
 import { steps } from './steps.mjs';
 import { buildGoals } from './goals.mjs';
-import { writeLanguage, writeReceipts } from './store.mjs';
-import { buildReceipt } from './receipt.mjs';
-import { clientLabel } from './clients.mjs';
+import { writeLanguage, writeReceipts, appendSignals, loadGoverned } from './store.mjs';
+import { buildReceipt, receiptIdOf } from './receipt.mjs';
+import { clientLabel, CLIENTS } from './clients.mjs';
+import { extractSignals } from './precedent.mjs';
 import { repoOf } from './workstreams.mjs';
 import { costOf, tokensOf, spanCost } from './cost.mjs';
 
@@ -34,10 +35,19 @@ parentPort.on('message', async ({ file, client }) => {
     const ue = s.usageEvents || [];
     for (const t of r.threads) { const c = spanCost(ue, t.spans || [], s.model, client); if (c) t.cost = c; }
     for (const g of goals) { const c = spanCost(ue, g.spans || [], s.model, client); if (c) g.cost = c; }
-    // One Agent Work Receipt per piece of work (src/receipt.mjs).
+    // One Agent Work Receipt per piece of work (src/receipt.mjs), and the judgments a person made along the way
+    // (src/precedent.mjs), kept locally as precedent candidates and named by the receipt they happened in.
     try {
       const meta = { client, id, model: s.model, mode: s.mode, cwd: s.cwd, repo: repoOf(s.cwd), project: (s.cwd || '').split('/').filter(Boolean).slice(-1)[0] || null, label: clientLabel(client), start: s.start, end: s.end };
-      writeReceipts(id, goals.map((g) => buildReceipt(meta, g, st, r.threads.find((t) => t.id === g.root))));
+      const goalAt = new Map(); for (const g of goals) for (const [a, b] of g.spans || []) for (let i = a; i <= b; i++) goalAt.set(i, g);
+      let signals = [];
+      try {
+        const contract = CLIENTS[client]?.contract; const harness = contract && contract !== 'other' ? contract : client;
+        signals = extractSignals(s, { sessionId: id, harness, repo: meta.repo, receiptIdAt: (i) => (goalAt.get(i) ? receiptIdOf(meta, goalAt.get(i).root) : null) });
+        appendSignals(signals);
+      } catch {}
+      const gov = loadGoverned();
+      writeReceipts(id, goals.map((g) => { const rid = receiptIdOf(meta, g.root); return buildReceipt(meta, g, st, r.threads.find((t) => t.id === g.root), { governedBy: gov[rid] ?? gov[id] ?? s.governedBy, signals: signals.filter((x) => x.receiptId === rid).map((x) => x.signalId) }); }));
     } catch {}
     const tagCounts = {}; for (const x of st) if (x.tag) tagCounts[x.tag] = (tagCounts[x.tag] || 0) + 1;
     const sess = {

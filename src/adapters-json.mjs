@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HARNESS } from './classify.mjs';
+import { USER_REJECTED, markRejected } from './precedent.mjs';
 
 const readJSON = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 const iso = (x) => { if (x == null) return null; const d = new Date(typeof x === 'number' ? x : String(x)); return isNaN(d) ? null : d.toISOString(); };
@@ -75,6 +76,7 @@ export async function readCopilot(file) {
       let args = {}; try { args = JSON.parse(call?.arguments || inv.resultDetails?.input || '{}'); } catch {}
       const details = inv.resultDetails; const failed = details?.isError === true || inv.isConfirmed === false;
       const e = { k: 'tool', ts, client: 'copilot', tool: COPILOT_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw), rawTool: raw, target: argTarget(args), err: failed, denied: inv.isConfirmed === false, errText: failed ? clip(JSON.stringify(details?.output ?? details ?? ''), 400) : '' };
+      if (inv.isConfirmed === false) markRejected(e, e.errText);
       const at = ev.findIndex((x) => x.placeholder === id); if (at >= 0) ev[at] = e;
     });
   }
@@ -107,6 +109,7 @@ export async function readGemini(file) {
       const resp = JSON.stringify((c.result || []).map((r) => r.functionResponse?.response ?? r) ?? '');
       const err = c.status === 'error' || /"error"/.test(resp.slice(0, 200)); const denied = c.status === 'cancelled';
       const e = { k: 'tool', ts: iso(c.timestamp) || ts, client: 'gemini', tool: GEMINI_TOOL[c.name] || c.name, rawTool: c.name, target: argTarget(c.args), err: err || denied, denied, errText: err || denied ? clip(resp, 400) : '' };
+      if (denied) markRejected(e, resp);
       if (!e.err && e.tool === 'Bash') e.outTail = resp.slice(-400);
       ev.push(e);
     }
@@ -135,7 +138,7 @@ export async function readDroid(file) {
     const m = d.message || {}; model = m.model || model;
     for (const c of m.content || []) {
       if (m.role === 'user' && c.type === 'text') ask(ev, ts, c.text);
-      else if (m.role === 'user' && c.type === 'tool_result') { const e = pend.get(c.tool_use_id); if (!e) continue; const txt = typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? ''); if (c.is_error) { e.err = true; e.errText = txt.slice(0, 400); e.denied = /denied|rejected|not allowed/i.test(txt); } else if (e.tool === 'Bash') e.outTail = txt.slice(-400); }
+      else if (m.role === 'user' && c.type === 'tool_result') { const e = pend.get(c.tool_use_id); if (!e) continue; const txt = typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? ''); if (c.is_error) { e.err = true; e.errText = txt.slice(0, 400); e.denied = /denied|rejected|not allowed/i.test(txt); if (USER_REJECTED.test(txt)) markRejected(e, txt); } else if (e.tool === 'Bash') e.outTail = txt.slice(-400); }
       else if (m.role === 'assistant' && c.type === 'text') say(ev, ts, c.text);
       else if (m.role === 'assistant' && c.type === 'thinking' && c.thinking) reasoning.push({ i: ev.length, ts, text: String(c.thinking).slice(0, 6000) });
       else if (m.role === 'assistant' && c.type === 'tool_use') { let input = c.input; if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = {}; } } const e = { k: 'tool', ts, client: 'droid', tool: DROID_TOOL[c.name] || c.name, rawTool: c.name, target: argTarget(input || {}), err: false, denied: false, errText: '' }; pend.set(c.id, e); ev.push(e); }
