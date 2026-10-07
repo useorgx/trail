@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { isShip, isVerification } from './steps.mjs';
 import { HOME } from './store.mjs';
+import { isCorrection } from './precedent.mjs';
 
 // Jev's independent read of each goal's outcome, from `trail deepen` (opt-in). When it agrees with the steps, the
 // call is trusted; when it disagrees, the goal is marked unsure. Keyed by session, root thread and the goal's spans.
@@ -92,12 +93,23 @@ function outcome(mine, endsSession) {
 
 // A backtrack is a course change in the agent's words or reasoning. Its trigger is what came just before it.
 // Rules and Jev see different ones (Jev is more precise, the rules catch more), so either counts; `seen` records which.
+// A person correcting the work ("no, use X instead") or refusing a call is a change of course too, triggered by them.
 function backtracks(mine) {
-  const out = [];
+  const out = []; let asked = false;
   mine.forEach((x, k) => {
+    if (x.kind === 'ask') {
+      const opener = !asked; asked = true;
+      if (opener || x.who !== 'human') return;
+      const prev = mine.slice(0, k).reverse().find((b) => b.kind !== 'say' && b.kind !== 'think');
+      if (!isCorrection(x.text) && !(prev?.kind === 'tool' && prev.rejected)) return;
+      if (out.length && x.at - out[out.length - 1].at <= 2 && out[out.length - 1].trigger === 'person') return;
+      out.push({ at: x.at, trigger: 'person', by: 'ask', seen: 'rule' }); return;
+    }
     if (x.tag !== 'course_change' && x.rule !== 'course_change') return;
     const before = mine.slice(Math.max(0, k - 4), k);
-    const trigger = before.some((b) => b.kind === 'tool' && (b.result === 'fail' || b.result === 'denied')) ? 'error' : before.some((b) => b.kind === 'ask') ? 'person' : x.kind === 'think' ? 'reasoning' : 'evidence';
+    const trigger = before.some((b) => b.kind === 'tool' && b.rejected) ? 'person'
+      : before.some((b) => b.kind === 'tool' && b.result === 'fail') ? 'error' : before.some((b) => b.kind === 'tool' && b.result === 'denied') ? 'denied'
+      : before.some((b) => b.kind === 'ask') ? 'person' : x.kind === 'think' ? 'reasoning' : 'evidence';
     if (out.length && x.at - out[out.length - 1].at <= 2) return; // one change of course, not every sentence about it
     out.push({ at: x.at, trigger, by: x.kind, seen: x.tag === x.rule ? 'both' : x.tag === 'course_change' ? x.by : 'rule' });
   });

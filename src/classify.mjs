@@ -2,6 +2,7 @@
 // Everything here is deterministic and runs in microseconds per session.
 import os from 'node:os';
 import { WALLS, signature } from './walls.mjs';
+import { isCorrection } from './precedent.mjs';
 
 export const HARNESS = /^(Base directory for this skill|Approach this as|Skill \/|The previous response failed|<(command-|local-command|task-notification|system-reminder|environment_context|recommended_p|codex_internal|user_instructions|in-app-brows|permissions instructions)|Caveat:|\[Request interrupted|\[Usage limit reached|\[Earlier usage-limit notes|The app was quit while you were working|Another Claude session sent a message|<cross-session-message|Stop hook feedback:|A session-scoped Stop hook is now active|"Auto-fix pull requests" \(the desktop app\)|# AGENTS\.md)/;
 export const CONTINUE = /^\s*(continue|go on|keep going|go|proceed|yes|yep|ok(ay)?|do it|go ahead|try again|continue from where you left off\.?|resume)[.!]?\s*$/i;
@@ -83,6 +84,9 @@ export function threadify(s) {
     if (e.k === 'ask') {
       if (e.who === 'human') { if (T.length) CONTINUE.test(e.text) ? steers.cont++ : steers.human++; } else steers[e.who] = (steers[e.who] || 0) + 1;
       if (CONTINUE.test(e.text) && cur) continue;
+      // A correction ("no, use X instead", "don't do that", "actually …") or the reason given right after rejecting a
+      // call steers the work in progress: it stays in the current thread (goals read it as a change of course).
+      if (cur && e.who === 'human' && (isCorrection(e.text) || afterRejection(s.ev, i))) continue;
       parent = open(e.who === 'schedule' ? 'schedule' : 'ask', firstSentence(e.text), i);
       cur.ask = e.text.replace(/\s+/g, ' ').slice(0, 300);
       continue;
@@ -105,8 +109,9 @@ export function threadify(s) {
     if (e.err) {
       e.slip = SLIP_TOOL.test(e.tool) || SLIP_TEXT.test(e.errText);
       cur.errs++; recentErrs.push(e); if (recentErrs.length > 4) recentErrs.shift();
-      const named = WALLS.find((w) => w.detect(e));
-      const sig = named ? named.id : e.slip ? null : signature(e);
+      // A person saying no is a judgment, not a wall: it counts as a denial but never becomes a wall to route around.
+      const named = e.rejected ? null : WALLS.find((w) => w.detect(e));
+      const sig = e.rejected ? null : named ? named.id : e.slip ? null : signature(e);
       if (sig) { const w = walls.get(sig) || { sig, named: !!named, tool: e.tool, n: 0, sample: errLine(e).slice(0, 200), target: e.target.slice(0, 120) }; w.n++; walls.set(sig, w); }
     } else if (recentErrs.length && e.lane === recentErrs.at(-1).lane && e.tool === recentErrs.at(-1).tool && e.target !== recentErrs.at(-1).target && i - s.ev.indexOf(recentErrs.at(-1)) < 5) {
       cur.backs.push({ i, why: firstSentence(errLine(recentErrs.at(-1)), 90), what: `retried as a different ${e.tool} call` }); recentErrs.length = 0;
@@ -115,7 +120,7 @@ export function threadify(s) {
       const pr = (e.target + ' ' + (e.out || '')).match(/#(\d{2,6})|pull\/(\d+)/); const cm = e.target.match(/commit[^"']*-m\s+["']([^"'\n]{4,80})/);
       cur.claim.push(pr ? 'PR #' + (pr[1] || pr[2]) : cm ? `commit “${cm[1]}”` : e.tool === 'Artifact' ? 'published an artifact' : firstSentence(e.target, 40));
     }
-    if (e.denied && !deniedWall && cur.origin !== 'surprise') {
+    if (e.denied && !e.rejected && !deniedWall && cur.origin !== 'surprise') {
       deniedWall = true; const home = cur; home.moves.pop();
       cur = open('surprise', `Work around ${e.tool} calls denied by permissions`, i); cur.resume = home; cur.kind = 'wall'; cur.moves.push('D');
     } else if (recentErrs.filter((x) => !x.denied && !x.slip).length >= 2 && cur.origin !== 'surprise') {
@@ -138,6 +143,11 @@ export function threadify(s) {
   return { threads, walls: [...walls.values()], steers, tools, errs, denied, compactions: s.ev.filter((e) => e.k === 'compact').length };
 }
 
+/** The person speaks right after refusing a tool call (only agent words in between): their words are its reason. */
+function afterRejection(ev, i) {
+  for (let k = i - 1; k >= 0; k--) { const e = ev[k]; if (e.k === 'say' || e.k === 'compact') continue; return e.k === 'tool' && !!e.rejected; }
+  return false;
+}
 function errLine(e) { return String(e.errText || '').replace(/^[\s"{[]+/, '').replace(/\\n/g, ' ').replace(/\s+/g, ' '); }
 
 function finish(t, isLast, n) {

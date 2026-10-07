@@ -4,6 +4,7 @@
 // person stepped in. Every inferred value says so (extensions['org.orgx.trail/v1'].provenance) with a confidence.
 import { isShip, isVerification } from './steps.mjs';
 import { VERSION } from './store.mjs';
+import { isCorrection, precedentLineage, PRECEDENT_EXT } from './precedent.mjs';
 
 export const SCHEMA_VERSION = 'agent-work-receipt/v0.2';
 export const EXT = 'org.orgx.trail/v1';
@@ -104,16 +105,24 @@ const AUTHORITY = { dontAsk: ['policy', 'restricted'], bypassPermissions: ['dele
 const PROVIDER = (m) => (/claude/i.test(m) ? 'anthropic' : /^(gpt|o\d|codex)/i.test(m) ? 'openai' : /gemini/i.test(m) ? 'google' : /grok/i.test(m) ? 'xai' : /deepseek/i.test(m) ? 'deepseek' : 'unknown');
 const CORRECTION = /\b(no|wrong|instead|actually|don'?t|stop|not that|revert|undo|that's not)\b/i;
 
+// The person's message kinds behind a change of course, in the receipt's trajectory vocabulary. Goals call a person
+// stepping in 'person'; older records may say 'human' or 'steer'.
+const TRIGGER = { error: 'error', denied: 'denial', person: 'human', human: 'human', steer: 'human' };
+const TRIGGER_WORDS = { error: 'a failure', denied: 'a denied action', person: 'a person stepped in', human: 'a person stepped in', steer: 'a person stepped in' };
+export const receiptIdOf = (session, rootThread) => `trail:${session.client}:${session.id}:${rootThread}`;
+
 /**
- * @param {{client:string, id:string, model?:string, mode?:string, cwd?:string, label?:string}} session
+ * @param {{client:string, id:string, model?:string, mode?:string, cwd?:string, label?:string, governedBy?:{claimId:string,version?:any}[]}} session
  * @param {any} goal  from goals.mjs (with spans, outcome, backtracks, conf, cost, checkedAfterChange)
  * @param {any[]} steps  steps(s, lang) for the whole session
  * @param {any} thread  the goal's root thread (ask, title, origin)
+ * @param {{governedBy?:{claimId:string,version?:any}[], signals?:string[]}} [precedent]  precedents that governed this
+ *   work (from OrgX's brief, a local file, or session metadata) and the judgment signals observed inside it
  */
-export function buildReceipt(session, goal, steps, thread) {
+export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   const own = new Set(); for (const [a, b] of goal.spans || []) for (let i = a; i <= b; i++) own.add(i);
   const mine = steps.filter((x) => own.has(x.at) || (x.kind === 'think' && own.has(Math.min(x.at, Math.max(...own)))));
-  const ask = thread?.ask || goal.title || ''; const receiptId = `trail:${session.client}:${session.id}:${goal.root}`;
+  const ask = thread?.ask || goal.title || ''; const receiptId = receiptIdOf(session, goal.root);
   const times = mine.map((x) => iso(x.ts)).filter(Boolean); const started = times[0] || iso(session.start) || new Date(0).toISOString(); const completed = times[times.length - 1] || iso(session.end) || started;
   const sessionRef = { system: session.client, type: 'session', id: String(session.id) };
   const says = mine.filter((x) => x.kind === 'say'); const finalText = says.length ? String(says[says.length - 1].text || '') : '';
@@ -154,9 +163,11 @@ export function buildReceipt(session, goal, steps, thread) {
   const askStep = mine.find((x) => x.kind === 'ask');
   if (askStep) addEvidence(askStep, 'request', 'What the person asked', askStep.text);
   else evidence.push({ id: 'ev-request', kind: 'request', summary: nonEmpty(clip(goal.title, 300), 'Work started without a recorded ask'), observed_at: started });
-  const human_interventions = asks.slice(1).map((x) => ({ id: `human-${x.at}`, kind: CORRECTION.test(x.text || '') ? 'correction' : 'input', actor: { type: 'human', id: 'workspace-member' }, summary: nonEmpty(clip(x.text, 300), 'message'), occurred_at: iso(x.ts) || completed }));
+  const human_interventions = asks.slice(1).map((x) => ({ id: `human-${x.at}`, kind: CORRECTION.test(x.text || '') || isCorrection(x.text) ? 'correction' : 'input', actor: { type: 'human', id: 'workspace-member' }, summary: nonEmpty(clip(x.text, 300), 'message'), occurred_at: iso(x.ts) || completed }));
 
   const arts = artifacts(mine, finalText, receiptId, sessionRef);
+  // Which precedents governed this work (lineage, relationship governed_by) and which judgments were seen in it.
+  const prec = precedentLineage(precedent.governedBy ?? session.governedBy, precedent.signals);
   const actionIds = new Set(actions.map((a) => a.id));
   const [mode, astatus] = AUTHORITY[session.mode] || ['unknown', 'unknown'];
   const receipt = {
@@ -169,7 +180,7 @@ export function buildReceipt(session, goal, steps, thread) {
     outcome: { status: oStatus, ...(checked.length ? { criteria_results: checked.map((c) => ({ criterion_id: c.id, status: c.evidence_ids.length ? c.status : 'unknown', evidence_ids: c.evidence_ids, confidence: c.confidence })) } : {}), summary: nonEmpty(finalText ? firstSentence(finalText) : `${goal.outcome?.kind || 'unclear'} (inferred from the steps)`, 'No closing message.'), acceptance: { status: 'pending' }, metadata: { kind: goal.outcome?.kind || 'unclear', confidence: goal.conf?.outcome ?? null, provenance: 'trail_inferred', ...(outcomeEv ? { decided_by_evidence: outcomeEv } : {}) } },
     verification: { status: vStatus, method: checks.length ? 'Checks observed in the transcript (test, typecheck, lint, build runs after the last change) and acceptance criteria matched to evidence.' : 'No check ran after the last change, and no acceptance criterion could be matched to evidence.', verifier: { type: 'service', id: 'orgx-trail', display_name: 'trail' }, checks, evidence_ids: [...new Set(checks.flatMap((c) => c.evidence_ids))], ...(checks.length ? { verified_at: evidence.filter((e) => checks.some((c) => c.evidence_ids.includes(e.id))).map((e) => e.observed_at).sort().pop() || completed } : {}) },
     cost: { currency: 'USD', total: goal.cost?.usd ?? 0, estimated: true, ...(goal.cost?.tokens ? { usage: [{ name: 'model_tokens', quantity: goal.cost.tokens, unit: 'token' }] } : {}), metadata: { basis: goal.cost ? 'list prices × transcript token counts' : 'no token counts in this transcript' } },
-    lineage: { run_ref: sessionRef, parent_receipt_refs: [], references: [...arts.filter((a) => a.role === 'output').map((a) => ({ relationship: a.kind === 'pull_request' ? 'produced' : 'changes', ref: a.ref }))].slice(0, 200) },
+    lineage: { run_ref: sessionRef, parent_receipt_refs: [], references: [...prec.references, ...arts.filter((a) => a.role === 'output').map((a) => ({ relationship: a.kind === 'pull_request' ? 'produced' : 'changes', ref: a.ref }))].slice(0, 200 + prec.references.length) },
     human_interventions,
     timestamps: { started_at: started, completed_at: completed, issued_at: completed },
     // Which values trail saw and which it inferred, with the rules version that inferred them.
@@ -181,7 +192,7 @@ export function buildReceipt(session, goal, steps, thread) {
       { path: '/cost/total', basis: 'inferred', method: 'list prices x transcript tokens', ...(goal.cost ? {} : { confidence: 0 }) },
     ].filter((x) => x.path !== '/intent/objective' || ask),
     // Where the approach changed, and what set it off.
-    trajectory: (goal.backtracks || []).slice(0, 100).map((b, i) => ({ id: `turn-${i + 1}`, kind: 'change_of_course', summary: `Changed approach after ${b.trigger === 'error' ? 'a failure' : b.trigger === 'denied' ? 'a denied action' : b.trigger === 'human' ? 'a correction' : 'reconsidering'} (step ${b.at}).`, trigger: ({ error: 'error', denied: 'denial', human: 'human', steer: 'human' })[b.trigger] || 'self', ...(actionIds.has(`step-${b.at}`) ? { action_ids: [`step-${b.at}`] } : {}), ...(typeof goal.conf?.backtracks === 'number' ? { confidence: +goal.conf.backtracks.toFixed(2) } : {}) })),
+    trajectory: (goal.backtracks || []).slice(0, 100).map((b, i) => ({ id: `turn-${i + 1}`, kind: 'change_of_course', summary: `Changed approach after ${TRIGGER_WORDS[b.trigger] || 'reconsidering'} (step ${b.at}).`, trigger: TRIGGER[b.trigger] || 'self', ...(actionIds.has(`step-${b.at}`) ? { action_ids: [`step-${b.at}`] } : {}), ...(typeof goal.conf?.backtracks === 'number' ? { confidence: +goal.conf.backtracks.toFixed(2) } : {}) })),
     extensions: { [EXT]: {
       goal_id: goal.id, root_thread: goal.root, origin: goal.origin, cwd: session.cwd || null, repo: session.repo || null, project: session.project || null,
       outcome_kind: goal.outcome?.kind || 'unclear',
@@ -190,7 +201,7 @@ export function buildReceipt(session, goal, steps, thread) {
       episodes: goal.episodes || [], changes_of_course: (goal.backtracks || []).map((b) => ({ at: b.at, trigger: b.trigger, evidence: `${session.id}#${b.at}` })),
       verified_by_two_reads: goal.verified || false,
       provenance: { intent: 'observed (the ask)', criteria: 'rules over the ask', outcome: goal.jev ? 'steps + Jev' : 'rules over the steps', artifacts_roles: 'rules', cost: goal.cost ? 'estimated' : 'none' },
-    } },
+    }, ...(prec.extension ? { [PRECEDENT_EXT]: prec.extension } : {}) },
   };
   return receipt;
 }

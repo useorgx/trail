@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { HARNESS } from './classify.mjs';
+import { USER_REJECTED, markRejected } from './precedent.mjs';
 
 let sqlite;
 function db(file) {
@@ -74,6 +75,7 @@ export async function readOpenCode(ref) {
       else if (p.type === 'tool') {
         const st = p.state || {}; const raw = String(p.tool || 'tool'); const err = st.status === 'error'; const errText = err ? String(st.error || '').slice(0, 400) : '';
         const e = { k: 'tool', ts: iso(st.time?.start) || ts, client: 'opencode', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(st.input), err, denied: err && DENIED.test(errText), errText };
+        if (err && USER_REJECTED.test(String(st.error || ''))) markRejected(e, String(st.error));
         if (!err && e.tool === 'Bash' && /\bgit (commit|push)|gh pr (create|merge)/.test(e.target)) e.out = String(st.output || '').slice(0, 300);
         ev.push(e);
       }
@@ -109,7 +111,7 @@ export async function readCursor(file) {
         } else if (p.type === 'tool-result') {
           const e = pend.get(p.toolCallId); if (!e) continue; const res = p.result;
           const failed = (res && typeof res === 'object' && (res.isError === true || res.success === false || typeof res.error === 'string')) || (typeof res === 'string' && /^(error|failed|exception)\b/i.test(res.trim()));
-          if (failed) { e.err = true; e.errText = (typeof res === 'string' ? res : String(res.error ?? JSON.stringify(res))).slice(0, 400); e.denied = DENIED.test(e.errText); }
+          if (failed) { e.err = true; e.errText = (typeof res === 'string' ? res : String(res.error ?? JSON.stringify(res))).slice(0, 400); e.denied = DENIED.test(e.errText); const full = typeof res === 'string' ? res : String(res.error ?? JSON.stringify(res)); if (USER_REJECTED.test(full)) markRejected(e, full); }
         }
       }
     }
@@ -199,6 +201,7 @@ export async function readCursorIDE(ref) {
         const result = typeof t.result === 'string' ? t.result : JSON.stringify(t.result ?? '');
         const err = t.status === 'error'; const denied = t.status === 'cancelled' || t.status === 'rejected';
         const e = { k: 'tool', ts, client: 'cursor-ide', tool, rawTool: raw, target, err: err || denied, denied, errText: err || denied ? result.slice(0, 400) : '' };
+        if (denied) markRejected(e, result);
         if (!e.err && tool === 'Bash') e.outTail = result.slice(-400);
         ev.push(e); continue;
       }

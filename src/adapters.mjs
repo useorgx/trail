@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 import zlib from 'node:zlib';
 import { HARNESS } from './classify.mjs';
+import { USER_REJECTED, markRejected } from './precedent.mjs';
 
 let onBytes = null;
 export const setByteListener = (fn) => { onBytes = fn; };
@@ -24,15 +25,17 @@ const SHIP = /\bgit (commit|push)|gh pr (create|merge)/;
 export const CHECK = /\b(tsc|typecheck|vitest|jest|pytest|playwright test|eslint|lint|pnpm (test|check|build)|npm (test|run \S+)|cargo (test|build|check)|go (test|build|vet)|node --test|next build|tsup|vite build|make)\b/;
 const FULL = 6000; // full message length kept for the side file; events keep the 400-char cut so indices and outputs stay stable
 const HOOKISH = /^\s*(Stop hook|<ci-monitor|Auto-fix|\[SYSTEM NOTIFICATION)/i;
+const resultText = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => (typeof x === 'string' ? x : x?.text || '')).join('\n') : JSON.stringify(c ?? ''));
 
 export async function readClaude(file) {
-  const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
+  const ev = []; const reasoning = []; const pend = new Map(); const done = new Set(); let lastTool = null, lastToolId = null; let start = null, end = null, cwd = null, model = null; const modes = {};
   const usageById = new Map(); // streamed chunks repeat a message's usage: keep one per message id, placed where it first appeared
   for await (const l of lines(file)) {
     if (l.length < 20) continue;
     if (l.length > 60000 && l.includes('"tool_result"')) {
       const id = l.match(/"tool_use_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id);
-      if (e && /"is_error":true/.test(l)) { const at = l.indexOf('"content"'); e.err = true; e.errText = l.slice(at + 10, at + 410); e.denied = /Permission to use/.test(e.errText); }
+      if (e && /"is_error":true/.test(l)) { const at = l.indexOf('"content"'); e.err = true; e.errText = l.slice(at + 10, at + 410); e.denied = /Permission to use/.test(e.errText); if (USER_REJECTED.test(l.slice(at, at + 2000))) markRejected(e, e.errText); }
+      if (id) done.add(id);
       continue;
     }
     const d = safeJSON(l); if (!d || d.isSidechain) continue;
@@ -45,13 +48,19 @@ export async function readClaude(file) {
     if (!Array.isArray(c)) continue;
     for (const b of c) {
       if (d.type === 'user' && b.type === 'text') {
-        const x = (b.text || '').trim(); if (!x || HARNESS.test(x)) continue;
+        const x = (b.text || '').trim();
+        // Interrupting a call that is still running leaves only this marker: the call did not get to finish.
+        if (/^\[Request interrupted by user for tool use\]/.test(x) && lastTool && !lastTool.rejected && !done.has(lastToolId)) markRejected(lastTool, x);
+        if (!x || HARNESS.test(x)) continue;
         if (x.startsWith('This session is being continued')) { ev.push({ k: 'compact', ts }); continue; }
         const sched = x.match(/<scheduled-task name="([^"]+)"/);
         ev.push({ k: 'ask', ts, text: sched ? `[scheduled] ${sched[1]}` : x.startsWith('[Image') ? '[screenshot]' : x.slice(0, 600), who: sched ? 'schedule' : HOOKISH.test(x) ? 'hook' : 'human' });
       } else if (d.type === 'user' && b.type === 'tool_result') {
-        const e = pend.get(b.tool_use_id); if (!e) continue;
-        if (b.is_error) { e.err = true; e.errText = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 400); e.denied = /Permission to use/.test(e.errText); }
+        const e = pend.get(b.tool_use_id); if (!e) continue; done.add(b.tool_use_id);
+        if (b.is_error) {
+          e.err = true; e.errText = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 400); e.denied = /Permission to use/.test(e.errText);
+          const full = resultText(b.content); if (USER_REJECTED.test(full)) markRejected(e, full);
+        }
         else if (SHIP.test(e.target)) e.out = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300);
         else if (CHECK.test(e.target)) e.outTail = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(-400);
       } else if (d.type === 'assistant' && b.type === 'thinking' && b.thinking) {
@@ -62,7 +71,7 @@ export async function readClaude(file) {
         const i = b.input || {}; const rawTool = b.name; const tool = rawTool.split('__').pop();
         const target = String(i.file_path ?? i.command ?? i.pattern ?? i.url ?? i.query ?? i.skill ?? i.description ?? i.path ?? i.action ?? '').slice(0, 240);
         const e = { k: 'tool', ts, tool, rawTool, target, err: false, denied: false, errText: '' };
-        pend.set(b.id, e); ev.push(e);
+        pend.set(b.id, e); ev.push(e); lastTool = e; lastToolId = b.id;
       }
     }
   }
@@ -96,6 +105,7 @@ function codexItem(it, ts, sink) {
       const err = it.status === 'declined' || ((it.status === 'failed' || (Number.isFinite(code) && code !== 0)) && !benign);
       const denied = it.status === 'declined' || (err && SANDBOX_DENIED.test(out));
       const e = { k: 'tool', ts, client: 'codex', tool: 'Bash', rawTool: 'exec_command', target, err, denied, errText: err ? (out.slice(0, 380) + (Number.isFinite(code) ? ` (exit ${code})` : '')).trim() : '', exitCode: Number.isFinite(code) ? code : null };
+      if (it.status === 'declined' || (err && USER_REJECTED.test(out))) markRejected(e, out || 'Declined by the user');
       if (!err && SHIP.test(target)) e.out = out.slice(0, 300);
       if (CHECK.test(target)) e.outTail = out.slice(-400);
       ev.push(e); sink.cwd ??= fileUrl(it.cwd); break;
@@ -103,12 +113,18 @@ function codexItem(it, ts, sink) {
     case 'McpToolCall': {
       const res = typeof it.result === 'string' ? it.result : JSON.stringify(it.result ?? '');
       const failed = it.status === 'failed' || /isError['"]?:\s*(True|true)/.test(res);
-      ev.push({ k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? res.replace(/^\{['"]content['"]:\s*\[\{['"]type['"]:\s*['"]text['"],\s*['"]text['"]:\s*/, '').slice(0, 400) : '' });
+      const e = { k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? res.replace(/^\{['"]content['"]:\s*\[\{['"]type['"]:\s*['"]text['"],\s*['"]text['"]:\s*/, '').slice(0, 400) : '' };
+      if (it.status === 'declined') markRejected(e, 'Declined by the user');
+      ev.push(e);
       break;
     }
     case 'FileChange': {
       const failed = it.status && it.status !== 'completed';
-      for (const f of Object.keys(it.changes || {}).slice(0, 20)) ev.push({ k: 'tool', ts, client: 'codex', tool: 'apply_patch', rawTool: 'apply_patch', target: f.slice(0, 240), err: failed, denied: failed && SANDBOX_DENIED.test(String(it.stderr || '')), errText: failed ? String(it.stderr || it.stdout || '').slice(0, 400) : '' });
+      for (const f of Object.keys(it.changes || {}).slice(0, 20)) {
+        const e = { k: 'tool', ts, client: 'codex', tool: 'apply_patch', rawTool: 'apply_patch', target: f.slice(0, 240), err: failed, denied: failed && SANDBOX_DENIED.test(String(it.stderr || '')), errText: failed ? String(it.stderr || it.stdout || '').slice(0, 400) : '' };
+        if (it.status === 'declined' || (failed && USER_REJECTED.test(String(it.stderr || '')))) markRejected(e, 'Declined by the user');
+        ev.push(e);
+      }
       break;
     }
     case 'ImageView': ev.push({ k: 'tool', ts, client: 'codex', tool: 'Read', rawTool: 'view_image', target: String(fileUrl(it.path) || '').slice(0, 240), err: false, denied: false, errText: '' }); break;
@@ -177,6 +193,7 @@ export async function readCodex(file) {
         const at = head3.indexOf('Output:'); const body = at >= 0 ? head3.slice(at + 7, at + 320) : head3.slice(0, 320);
         e.errText = (m && /Script error:\s*\S/.test(m[1]) ? m[1].replace('Script error:', '').trim() + '\n' : '') + body.trim() + (m && !/Script error/.test(m[1]) ? ` (${m[1].trim()})` : '');
         e.denied = /rejected by (the )?user|approval (was )?(denied|rejected)|sandbox.*denied|Operation not permitted/i.test(o);
+        if (USER_REJECTED.test(head3) || /approval (was )?(denied|rejected)/i.test(head3)) markRejected(e, head3);
       }
     }
   }
