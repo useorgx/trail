@@ -47,7 +47,7 @@ parentPort.on('message', async ({ file, client }) => {
         appendSignals(signals);
       } catch {}
       const gov = loadGoverned();
-      writeReceipts(id, goals.map((g) => { const rid = receiptIdOf(meta, g.root); return buildReceipt(meta, g, st, r.threads.find((t) => t.id === g.root), { governedBy: gov[rid] ?? gov[id] ?? s.governedBy, signals: signals.filter((x) => x.receiptId === rid).map((x) => x.signalId) }); }));
+      writeReceipts(id, goals.map((g) => { const rid = receiptIdOf(meta, g.root); return buildReceipt(meta, g, st, r.threads.find((t) => t.id === g.root), { governedBy: gov[rid] ?? gov[id] ?? s.governedBy, signals: signals.filter((x) => x.receiptId === rid).map((x) => x.signalId), threads: r.threads }); }));
     } catch {}
     const tagCounts = {}; for (const x of st) if (x.tag) tagCounts[x.tag] = (tagCounts[x.tag] || 0) + 1;
     const sess = {

@@ -1,10 +1,13 @@
-// One Agent Work Receipt (agent-work-receipt/v0.1, github.com/useorgx/agent-work-receipt) per piece of work.
+// One Agent Work Receipt (agent-work-receipt/v0.2, github.com/useorgx/agent-work-receipt) per piece of work.
 // Trail fills exactly what a session capture can't: what was asked and what "done" means (acceptance criteria), what
 // happened step by step, which artifacts were the deliverable, what checked it, how it ended, what it cost, where a
 // person stepped in. Every inferred value says so (extensions['org.orgx.trail/v1'].provenance) with a confidence.
+// The review layer (extensions['org.orgx.review/v1'], src/review.mjs) adds what a reviewer needs: each criterion
+// quoted from the person's words, four kinds of proof per criterion, stable episodes, and which layers exist.
 import { isShip, isVerification } from './steps.mjs';
 import { VERSION } from './store.mjs';
 import { isCorrection, precedentLineage, PRECEDENT_EXT } from './precedent.mjs';
+import { buildReview, REVIEW_EXT } from './review.mjs';
 
 export const SCHEMA_VERSION = 'agent-work-receipt/v0.2';
 export const EXT = 'org.orgx.trail/v1';
@@ -46,13 +49,14 @@ const CONSTRAINT = /\b(do not|don't|dont|never|without|only|must not|avoid|no mo
 export function extractIntent(ask) {
   const text = String(ask || '');
   const criteria = []; const seen = new Set();
-  for (const c of CRITERIA) if (c.re.test(text) && !seen.has(c.kind)) { seen.add(c.kind); criteria.push({ id: `c${criteria.length + 1}`, kind: c.kind, text: c.text }); }
+  for (const c of CRITERIA) { const m = text.match(c.re); if (m && !seen.has(c.kind)) { seen.add(c.kind); criteria.push({ id: `c${criteria.length + 1}`, kind: c.kind, text: c.text, quote: m[0].trim(), index: m.index }); } }
   // A named file to create or write is its own criterion.
   for (const m of text.matchAll(/\b(create|write|add|save)\b[^.\n]{0,30}?([\w./@-]+\.(md|ts|tsx|js|mjs|py|json|yaml|yml|html|css|sql|sh|png|jpg|svg|pdf|csv))\b/gi)) {
-    const f = m[2]; if (!seen.has('file:' + f)) { seen.add('file:' + f); criteria.push({ id: `c${criteria.length + 1}`, kind: 'file', file: f, text: `${base(f)} is created or updated` }); }
+    const f = m[2]; if (!seen.has('file:' + f)) { seen.add('file:' + f); criteria.push({ id: `c${criteria.length + 1}`, kind: 'file', file: f, text: `${base(f)} is created or updated`, quote: m[0].trim(), index: m.index }); }
   }
   // Otherwise "fix/implement/add X" still has a checkable minimum: a change with a check after it.
-  if (!criteria.some((c) => ['tests', 'typecheck', 'build', 'answer', 'file'].includes(c.kind)) && /\b(fix|implement|add|build|refactor|update|change|improve|make)\b/i.test(text)) criteria.push({ id: `c${criteria.length + 1}`, kind: 'change_checked', text: 'A change is made and checked afterwards' });
+  const verb = !criteria.some((c) => ['tests', 'typecheck', 'build', 'answer', 'file'].includes(c.kind)) && text.match(/\b(fix|implement|add|build|refactor|update|change|improve|make)\b[^.\n]{0,80}/i);
+  if (verb) criteria.push({ id: `c${criteria.length + 1}`, kind: 'change_checked', text: 'A change is made and checked afterwards', quote: verb[0].trim(), index: verb.index });
   const constraints = [...text.matchAll(CONSTRAINT)].map((m) => clip(m[0], 200)).slice(0, 10);
   return { criteria, constraints };
 }
@@ -116,8 +120,9 @@ export const receiptIdOf = (session, rootThread) => `trail:${session.client}:${s
  * @param {any} goal  from goals.mjs (with spans, outcome, backtracks, conf, cost, checkedAfterChange)
  * @param {any[]} steps  steps(s, lang) for the whole session
  * @param {any} thread  the goal's root thread (ask, title, origin)
- * @param {{governedBy?:{claimId:string,version?:any}[], signals?:string[]}} [precedent]  precedents that governed this
- *   work (from OrgX's brief, a local file, or session metadata) and the judgment signals observed inside it
+ * @param {{governedBy?:{claimId:string,version?:any}[], signals?:string[], threads?:any[]}} [precedent]  precedents that
+ *   governed this work (from OrgX's brief, a local file, or session metadata), the judgment signals observed inside it,
+ *   and every thread of the session (so detours inside this goal can become episodes)
  */
 export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   const own = new Set(); for (const [a, b] of goal.spans || []) for (let i = a; i <= b; i++) own.add(i);
@@ -203,5 +208,11 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
       provenance: { intent: 'observed (the ask)', criteria: 'rules over the ask', outcome: goal.jev ? 'steps + Jev' : 'rules over the steps', artifacts_roles: 'rules', cost: goal.cost ? 'estimated' : 'none' },
     }, ...(prec.extension ? { [PRECEDENT_EXT]: prec.extension } : {}) },
   };
+  // The review layer: built from the pieces above, never from a second reading of the transcript.
+  try {
+    receipt.extensions[REVIEW_EXT] = buildReview({ session, goal, mine, thread, threads: precedent.threads || [], receiptId, checked, evidence, evId, actions, trajectory: receipt.trajectory });
+  } catch (err) {
+    receipt.extensions[EXT].review_error = String(err?.message || err).slice(0, 200);
+  }
   return receipt;
 }

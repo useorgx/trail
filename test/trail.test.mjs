@@ -412,3 +412,49 @@ test('search: text ranked by BM25 with exact filters; every receipt leaves with 
   assert.ok(out.extensions['org.orgx.trail/v1'].workstream.id.startsWith('ws_'));
   const v = validateAgentWorkReceipt(out); assert.ok(v.ok, JSON.stringify(v.issues));
 });
+
+test('review layer: criteria quote the person, proof is four lenses, episodes are stable and tied to commits', async () => {
+  const { validateAgentWorkReceipt, validateOrgxReviewExtension, getOrgxReviewExtension } = await import('@useorgx/agent-work-receipt');
+  const { threadify } = await import('../src/classify.mjs'); const { steps } = await import('../src/steps.mjs');
+  const { buildGoals } = await import('../src/goals.mjs'); const { buildReceipt } = await import('../src/receipt.mjs');
+  const T = (ts, tool, target, extra = {}) => ({ k: 'tool', ts, tool, rawTool: tool, target, err: false, denied: false, errText: '', ...extra });
+  const s = { ev: [
+    { k: 'ask', ts: '2026-10-01T10:00:00Z', text: 'Fix the flaky test in auth.spec.ts (see BILL-412) and commit it. Do not touch the lockfile.', who: 'human' },
+    T('2026-10-01T10:00:05Z', 'Edit', '/repo/src/auth.ts'),
+    T('2026-10-01T10:00:10Z', 'Bash', 'pnpm test', { err: true, errText: 'FAIL auth.spec.ts\n1 failed', outTail: '1 failed' }),
+    { k: 'say', ts: '2026-10-01T10:00:12Z', text: 'Actually, the real cause is the timer mock, not the token. Switching to fake timers instead.' },
+    T('2026-10-01T10:00:20Z', 'Edit', '/repo/src/auth.spec.ts'),
+    T('2026-10-01T10:00:30Z', 'Bash', 'pnpm test', { outTail: 'Tests  12 passed (12)' }),
+    T('2026-10-01T10:00:40Z', 'Bash', 'git commit -am "fix: use fake timers in auth spec"', { out: '[main a1b2c3d] fix: use fake timers in auth spec\n 2 files changed' }),
+    { k: 'say', ts: '2026-10-01T10:00:50Z', text: 'Committed a1b2c3d: the auth spec now uses fake timers and the suite passes 12/12. The lockfile is untouched, as asked, and nothing else in the module changed.' } ], reasoning: [] };
+  const r = threadify(s); const st = steps(s, { reasoning: [] }); const [g] = buildGoals(s, r, st);
+  const build = () => buildReceipt({ client: 'claude', id: 'sess-r', model: 'claude-opus-5-5', mode: 'default', repo: 'acme/web', project: 'web' }, g, st, r.threads.find((t) => t.id === g.root), { threads: r.threads });
+  const rc = build();
+  const core = validateAgentWorkReceipt(rc); assert.ok(core.ok, JSON.stringify(core.issues));
+  const rv = validateOrgxReviewExtension(rc); assert.ok(rv.ok, JSON.stringify(rv.issues));
+  const x = getOrgxReviewExtension(rc);
+  // Where each criterion came from: the person's own words, with the message they sat in.
+  const tests = x.criteria.find((c) => c.criterion_id === rc.intent.criteria.find((k) => k.kind === 'tests').id);
+  assert.equal(tests.source_refs[0].source_id, 'ask'); assert.equal(tests.source_refs[0].at, 'message 1');
+  assert.match(tests.source_refs[0].quote, /flaky test/i);
+  assert.equal(tests.source_check, 'unchecked');
+  assert.ok(x.sources.some((src) => src.type === 'ticket' && src.title === 'BILL-412'), 'a ticket named in the ask is a source, unread');
+  // Four kinds of proof, each on its own.
+  assert.equal(tests.lenses.measured.status, 'pass'); assert.ok(tests.lenses.measured.evidence_ids.length);
+  assert.equal(tests.lenses.judged.status, 'none'); assert.equal(tests.lenses.outcome.status, 'none');
+  // Episodes: the ask, the change of course, both checks and the commit, in order, with the sha.
+  const kinds = x.episodes.map((e) => e.kind);
+  assert.deepEqual(kinds, ['ask', 'check', 'change', 'check', 'commit'], JSON.stringify(x.episodes.map((e) => [e.kind, e.title])));
+  const commit = x.episodes.find((e) => e.kind === 'commit');
+  assert.equal(commit.commit.sha, 'a1b2c3d'); assert.equal(commit.commit.href, 'https://github.com/acme/web/commit/a1b2c3d');
+  assert.match(x.episodes[2].title, /Changed approach after a failure/);
+  assert.ok(x.episodes.every((e) => /^ep-[0-9a-f]{12}$/.test(e.id)), 'ids are content hashes, not positions');
+  assert.deepEqual(build().extensions['org.orgx.review/v1'].episodes.map((e) => e.id), x.episodes.map((e) => e.id), 'rebuilding gives the same ids');
+  // The checks that decided a criterion are tied to it.
+  assert.ok(tests.episode_ids.includes(x.episodes[3].id), 'the passing test run is the criterion’s episode');
+  // Layers say what this record has and how to fill the gaps.
+  assert.equal(x.layers.transcript.status, 'full'); assert.equal(x.layers.judged.status, 'missing'); assert.ok(x.layers.judged.how);
+  assert.equal(x.layers.measured.status, 'full');
+  assert.equal(x.inputs[0].who, 'Person'); assert.ok(x.conversation.length >= 3);
+  assert.match(x.work, /web · Fix the flaky test/);
+});

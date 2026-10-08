@@ -17,7 +17,7 @@ npx @useorgx/trail
 |---|---|
 | `trail` | read new work, then open the explorer |
 | `trail goals` | see each piece of work, its detours, how it ended, and where the agent changed course (`--json`) |
-| `trail receipts` | one [Agent Work Receipt](https://github.com/useorgx/agent-work-receipt) (v0.2) per piece of work: what was asked, whether each acceptance criterion was met and on what evidence, what was delivered, what checked it (`<id>`, `--json`, `--export file`) |
+| `trail receipts` | one [Agent Work Receipt](https://github.com/useorgx/agent-work-receipt) (v0.2) per piece of work: what was asked, whether each acceptance criterion was met and on what evidence, what was delivered, what checked it (`<id>`, `--json`, `--export file`). Each receipt also carries the review layer (`extensions['org.orgx.review/v1']`): every criterion quoted from the person's words with the message it came from, four kinds of proof per criterion (reviewed, tested, shown, seen live), the episodes of the work with stable ids tied to commits, and which layers of the record exist. OrgX renders it as the Work Receipt Review |
 | `trail workstreams` | pieces of work joined across sessions by a shared PR, branch, rarely touched files, a pasted id, or an explicit continuation; words alone never join (`<id>`, `--all`) |
 | `trail search <q>` | search your receipts: ranked text plus exact filters such as `outcome:blocked type:fix repo:app pr:12 conf:<0.6 unmet:tests` |
 | `trail review` / `trail label` | the questions about your own work only you can settle (did it get done, was a criterion met); answers win over every guess |
