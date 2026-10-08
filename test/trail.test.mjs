@@ -414,7 +414,7 @@ test('search: text ranked by BM25 with exact filters; every receipt leaves with 
 });
 
 test('review layer: criteria quote the person, proof is four lenses, episodes are stable and tied to commits', async () => {
-  const { validateAgentWorkReceipt, validateOrgxReviewExtension, getOrgxReviewExtension } = await import('@useorgx/agent-work-receipt');
+  const { validateAgentWorkReceipt } = await import('@useorgx/agent-work-receipt');
   const { threadify } = await import('../src/classify.mjs'); const { steps } = await import('../src/steps.mjs');
   const { buildGoals } = await import('../src/goals.mjs'); const { buildReceipt } = await import('../src/receipt.mjs');
   const T = (ts, tool, target, extra = {}) => ({ k: 'tool', ts, tool, rawTool: tool, target, err: false, denied: false, errText: '', ...extra });
@@ -431,8 +431,26 @@ test('review layer: criteria quote the person, proof is four lenses, episodes ar
   const build = () => buildReceipt({ client: 'claude', id: 'sess-r', model: 'claude-opus-5-5', mode: 'default', repo: 'acme/web', project: 'web' }, g, st, r.threads.find((t) => t.id === g.root), { threads: r.threads });
   const rc = build();
   const core = validateAgentWorkReceipt(rc); assert.ok(core.ok, JSON.stringify(core.issues));
-  const rv = validateOrgxReviewExtension(rc); assert.ok(rv.ok, JSON.stringify(rv.issues));
-  const x = getOrgxReviewExtension(rc);
+  const x = rc.extensions['org.orgx.review/v1'];
+  assert.equal(x.version, 'org.orgx.review/v1');
+  // The cross-reference rules validateOrgxReviewExtension (agent-work-receipt >= 0.2.1) enforces, checked here directly
+  // so this suite runs against the published 0.2.0 core validator.
+  const ids = (xs) => new Set(xs.map((e) => e.id));
+  const crit = ids(rc.intent.criteria), ev = ids(rc.evidence), act = ids(rc.actions), traj = ids(rc.trajectory), src = ids(x.sources), eps = ids(x.episodes);
+  assert.equal(eps.size, x.episodes.length, 'episode ids are unique');
+  for (const e of x.episodes) {
+    for (const id of e.criterion_ids ?? []) assert.ok(crit.has(id), `episode criterion ${id}`);
+    for (const id of e.evidence_ids ?? []) assert.ok(ev.has(id), `episode evidence ${id}`);
+    for (const id of e.action_ids ?? []) assert.ok(act.has(id), `episode action ${id}`);
+    if (e.trajectory_id) assert.ok(traj.has(e.trajectory_id), `episode trajectory ${e.trajectory_id}`);
+    if (e.kind === 'commit') assert.match(e.commit?.sha ?? '', /^[0-9a-f]{7,64}$/);
+  }
+  for (const c of x.criteria) {
+    assert.ok(crit.has(c.criterion_id), `criterion ${c.criterion_id}`);
+    for (const r of c.source_refs) assert.ok(src.has(r.source_id), `source ${r.source_id}`);
+    for (const l of Object.values(c.lenses)) for (const id of l.evidence_ids ?? []) assert.ok(ev.has(id), `lens evidence ${id}`);
+    for (const id of c.episode_ids ?? []) assert.ok(eps.has(id), `criterion episode ${id}`);
+  }
   // Where each criterion came from: the person's own words, with the message they sat in.
   const tests = x.criteria.find((c) => c.criterion_id === rc.intent.criteria.find((k) => k.kind === 'tests').id);
   assert.equal(tests.source_refs[0].source_id, 'ask'); assert.equal(tests.source_refs[0].at, 'message 1');
