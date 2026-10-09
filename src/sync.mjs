@@ -11,8 +11,17 @@ import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
 import { wallById } from './walls.mjs';
 import { piiEnabled, maskPii } from './pii.mjs';
+import { receiptFingerprint, withIntegrity } from './integrity.mjs';
+import { redactDeep } from './redact.mjs';
+import { withProcessLock } from './process-lock.mjs';
 
 const SYNC_STATE = path.join(HOME, 'sync.json');
+const SYNC_LOCK = path.join(HOME, 'sync.lock');
+const saveSyncState = (state) => {
+  const temporary = `${SYNC_STATE}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
+  fs.renameSync(temporary, SYNC_STATE);
+};
 const CHUNK = 200;
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 import { CLIENTS } from './clients.mjs';
@@ -76,7 +85,8 @@ export function toSession(s, bounded) {
 
 const fingerprint = (s) => `${s.tools}:${s.threads.length}:${s.end}`;
 
-export async function sync({ dryRun = false, withTitles = false, base, limit } = {}) {
+export function sync(options = {}) { return withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
+async function performOutlineSync({ dryRun = false, withTitles = false, base, limit } = {}) {
   const bounded = !!withTitles;
   const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })();
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
@@ -117,7 +127,7 @@ export async function sync({ dryRun = false, withTitles = false, base, limit } =
     if (!res.ok) throw new Error(`OrgX refused the upload (${res.status}): ${body.error || 'unknown error'}${body.issues ? ' ' + JSON.stringify(body.issues.slice(0, 2)) : ''}`);
     sent += chunks[i].length; threads += body.data?.threads ?? 0; workspace = body.data?.workspaceId ?? workspace;
     for (const s of chunks[i]) state.sessions[s.id] = fingerprint(s);
-    fs.writeFileSync(SYNC_STATE, JSON.stringify(state));
+    saveSyncState(state);
   }
   return { dryRun: false, url, credential: cred.from, sessions: sent, threads, workspace, privacy: bounded ? 'bounded' : 'metadata_only' };
 }
@@ -152,48 +162,69 @@ const TEXT_FIELDS = (r) => [
 ].filter(([o, k]) => typeof o?.[k] === 'string' && o[k].length > 3);
 // One key per version of a receipt: a corrected receipt is a new import (OrgX keeps the latest per receipt id), never
 // an idempotency conflict with the version it replaces.
-const idemKey = (id, fp) => { const k = `${String(id).replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/^[^A-Za-z0-9]+/, '')}@${fp.slice(0, 8)}`; return k.length <= 160 ? k : `trail:${sha(id).slice(0, 40)}@${fp.slice(0, 8)}`; };
-const SETTLE_MS = 30 * 60_000; // work still in progress keeps changing; send it once it has been quiet for 30 minutes
-const receiptFingerprint = (r) => sha(JSON.stringify([r.outcome, r.verification.status, r.lineage, r.extensions?.['org.orgx.trail/v1']?.labels])).slice(0, 16);
+const idemKey = (id, fp) => { const k = `${String(id).replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/^[^A-Za-z0-9]+/, '')}@${fp}`; return k.length <= 160 ? k : `trail:${sha(id).slice(0, 40)}@${fp}`; };
+export const SETTLE_MS = 30 * 60_000;
+export function withLifecycle(receipt, status, reason = status === 'final' ? 'settled' : 'goal_boundary') {
+  const key = 'org.orgx.trail/v1';
+  return withIntegrity({ ...receipt, extensions: { ...receipt.extensions, [key]: { ...receipt.extensions?.[key], lifecycle: { ...receipt.extensions?.[key]?.lifecycle, status, reason } } } });
+}
 
-export async function syncReceipts({ dryRun = false, base, limit = 50, since } = {}) {
+let receiptSyncQueue = Promise.resolve();
+export function syncReceipts(options = {}) {
+  const result = receiptSyncQueue.then(() => withProcessLock(SYNC_LOCK, () => performReceiptSync(options)));
+  receiptSyncQueue = result.catch(() => {});
+  return result;
+}
+async function performReceiptSync({ dryRun = false, base, limit = 50, since, receipts, lane = 'final', now = Date.now(), fetchImpl = fetch } = {}) {
   const { ledger, withGraph } = await import('./ledger.mjs');
-  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {};
-  const L = ledger({ persist: true });
-  const settled = Date.now() - SETTLE_MS;
-  let todo = L.receipts.filter((r) => (!since || r.timestamps.started_at >= since) && Date.parse(r.timestamps.completed_at) < settled).map((r) => withGraph(r, L)).filter((r) => state.receipts[r.receipt_id] !== receiptFingerprint(r))
-    .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, limit);
+  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {}; state.receiptRevisions ||= {};
+  if (!['provisional', 'final'].includes(lane)) throw new Error('Receipt lane must be provisional or final.');
+  const L = receipts ? null : ledger({ persist: true });
+  const source = receipts || L.receipts;
+  const settled = now - SETTLE_MS;
+  let todo = source.filter((r) => (!since || r.timestamps.started_at >= since) && (lane === 'provisional' || (!r.actions?.some((a) => a.status === 'running') && Date.parse(r.timestamps.completed_at) <= settled)))
+    .map((r) => withLifecycle(L ? withGraph(r, L) : r, lane));
+  todo = redactDeep(todo);
   if (piiEnabled() && todo.length) {
     todo = JSON.parse(JSON.stringify(todo)); const slots = todo.flatMap(TEXT_FIELDS); const masked = maskPii(slots.map(([o, k]) => o[k])); slots.forEach(([o, k], i) => { o[k] = masked[i]; });
   }
+  // Hash the complete wire document after graph, review and privacy transforms. Integrity alone is excluded.
+  const sourceTime = (r) => Date.parse(r.extensions?.['org.orgx.trail/v1']?.lifecycle?.material_at || r.timestamps.completed_at);
+  todo = todo.map(withIntegrity).filter((r) => {
+    const previous = state.receiptRevisions[r.receipt_id]; const current = sourceTime(r);
+    if (previous && (previous.sourceTime > current || (previous.lane === 'final' && lane === 'provisional' && previous.sourceTime >= current))) return false;
+    return state.receipts[r.receipt_id] !== receiptFingerprint(r);
+  })
+    .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at)));
+  const eligible = todo.length; todo = todo.slice(0, limit);
   const root = baseUrl(base); const url = `${root}/api/v1/agent-work-receipts`;
   const privacy = piiEnabled() ? 'receipts (secrets redacted, personal data masked)' : 'receipts (secrets redacted; personal-data masking off — trail privacy --pii on)';
   state.signalsSent ||= {};
-  const signals = unsentSignals(state);
-  if (dryRun) return { dryRun: true, url, privacy, receipts: todo.length, pending: L.receipts.length - Object.keys(state.receipts).length, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
+  const signals = lane === 'provisional' ? [] : unsentSignals(state);
+  if (dryRun) return { dryRun: true, url, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
   const cred = credential();
   if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
   if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` };
-  const save = () => fs.writeFileSync(SYNC_STATE, JSON.stringify(state));
+  const save = () => saveSyncState(state);
   let sent = 0, duplicate = 0; const refused = [];
   // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
   let batch = true;
   for (let i = 0; i < todo.length;) {
     const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
     const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id, receiptFingerprint(r)) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id, receiptFingerprint(chunk[0])) };
-    const res = await fetch(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
     if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
     if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     const out = await res.json().catch(() => ({}));
     if (res.status === 409 && out.error?.code === 'workspace_receipt_import_limit_reached') { refused.push({ id: chunk[0].receipt_id, error: out.error.message }); break; }
     const results = batch ? (out.results || []) : [{ ...out, ok: res.ok }];
-    chunk.forEach((r, k) => { const x = results[k] || {}; if (x.ok) { sent++; if (x.idempotent) duplicate++; state.receipts[r.receipt_id] = receiptFingerprint(r); } else refused.push({ id: r.receipt_id, status: res.status, error: x.error?.code || out.error?.code || 'refused' }); });
+    chunk.forEach((r, k) => { const x = results[k] || {}; if (x.ok) { sent++; if (x.idempotent) duplicate++; state.receipts[r.receipt_id] = receiptFingerprint(r); state.receiptRevisions[r.receipt_id] = { sourceTime: sourceTime(r), lane }; } else refused.push({ id: r.receipt_id, status: res.status, error: x.error?.code || out.error?.code || 'refused' }); });
     save(); i += chunk.length;
     if (!res.ok && !batch && res.status >= 500) break;
   }
-  const sig = await sendSignals({ root, headers, state, save, signals });
-  return { dryRun: false, url, credential: cred.from, receipts: sent, duplicate, refused, privacy, remaining: L.receipts.length - Object.keys(state.receipts).length, signals: sig };
+  const sig = await sendSignals({ root, headers, state, save, signals, fetchImpl });
+  return { dryRun: false, url, credential: cred.from, lane, receipts: sent, duplicate, refused, privacy, remaining: eligible - sent, signals: sig };
 }
 
 // ---- precedent signals: the judgments a person made (corrections, rejections, denials, stated rules) --------------

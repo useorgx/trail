@@ -27,13 +27,15 @@ const FULL = 6000; // full message length kept for the side file; events keep th
 const HOOKISH = /^\s*(Stop hook|<ci-monitor|Auto-fix|\[SYSTEM NOTIFICATION)/i;
 const resultText = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => (typeof x === 'string' ? x : x?.text || '')).join('\n') : JSON.stringify(c ?? ''));
 
-export async function readClaude(file) {
-  const ev = []; const reasoning = []; const pend = new Map(); const done = new Set(); let lastTool = null, lastToolId = null; let start = null, end = null, cwd = null, model = null; const modes = {};
-  const usageById = new Map(); // streamed chunks repeat a message's usage: keep one per message id, placed where it first appeared
-  for await (const l of lines(file)) {
+export async function readClaude(file, options = {}) {
+  const state = options.state || {}; state.dirty = new Set();
+  const ev = state.ev ||= []; const reasoning = state.reasoning ||= []; const pend = state.pend ||= new Map(); const done = state.done ||= new Set();
+  let { lastTool = null, lastToolId = null, start = null, end = null, cwd = null, model = null } = state; const modes = state.modes ||= {};
+  const usageById = state.usageById ||= new Map(); // streamed chunks repeat a message's usage: keep one per message id, placed where it first appeared
+  for await (const l of options.lines || lines(file)) {
     if (l.length < 20) continue;
     if (l.length > 60000 && l.includes('"tool_result"')) {
-      const id = l.match(/"tool_use_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id);
+      const id = l.match(/"tool_use_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id); if (e) { state.dirty.add(e); delete e.pending; const completedAt = l.match(/"timestamp"\s*:\s*"([^"]+)"/)?.[1]; if (completedAt) e.completedAt = completedAt; }
       if (e && /"is_error":true/.test(l)) { const at = l.indexOf('"content"'); e.err = true; e.errText = l.slice(at + 10, at + 410); e.denied = /Permission to use/.test(e.errText); if (USER_REJECTED.test(l.slice(at, at + 2000))) markRejected(e, e.errText); }
       if (id) done.add(id);
       continue;
@@ -50,13 +52,13 @@ export async function readClaude(file) {
       if (d.type === 'user' && b.type === 'text') {
         const x = (b.text || '').trim();
         // Interrupting a call that is still running leaves only this marker: the call did not get to finish.
-        if (/^\[Request interrupted by user for tool use\]/.test(x) && lastTool && !lastTool.rejected && !done.has(lastToolId)) markRejected(lastTool, x);
+        if (/^\[Request interrupted by user for tool use\]/.test(x) && lastTool && !lastTool.rejected && !done.has(lastToolId)) { markRejected(lastTool, x); delete lastTool.pending; if (ts) lastTool.completedAt = ts; state.dirty.add(lastTool); }
         if (!x || HARNESS.test(x)) continue;
         if (x.startsWith('This session is being continued')) { ev.push({ k: 'compact', ts }); continue; }
         const sched = x.match(/<scheduled-task name="([^"]+)"/);
         ev.push({ k: 'ask', ts, text: sched ? `[scheduled] ${sched[1]}` : x.startsWith('[Image') ? '[screenshot]' : x.slice(0, 600), who: sched ? 'schedule' : HOOKISH.test(x) ? 'hook' : 'human' });
       } else if (d.type === 'user' && b.type === 'tool_result') {
-        const e = pend.get(b.tool_use_id); if (!e) continue; done.add(b.tool_use_id);
+        const e = pend.get(b.tool_use_id); if (!e) continue; state.dirty.add(e); done.add(b.tool_use_id); delete e.pending; if (ts) e.completedAt = ts;
         if (b.is_error) {
           e.err = true; e.errText = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 400); e.denied = /Permission to use/.test(e.errText);
           const full = resultText(b.content); if (USER_REJECTED.test(full)) markRejected(e, full);
@@ -70,11 +72,12 @@ export async function readClaude(file) {
       } else if (d.type === 'assistant' && b.type === 'tool_use') {
         const i = b.input || {}; const rawTool = b.name; const tool = rawTool.split('__').pop();
         const target = String(i.file_path ?? i.command ?? i.pattern ?? i.url ?? i.query ?? i.skill ?? i.description ?? i.path ?? i.action ?? '').slice(0, 240);
-        const e = { k: 'tool', ts, tool, rawTool, target, err: false, denied: false, errText: '' };
+        const e = { k: 'tool', ts, tool, rawTool, target, pending: true, err: false, denied: false, errText: '' };
         pend.set(b.id, e); ev.push(e); lastTool = e; lastToolId = b.id;
       }
     }
   }
+  Object.assign(state, { lastTool, lastToolId, start, end, cwd, model });
   const usageEvents = [...usageById.values()];
   const usage = usageEvents.length ? usageEvents.reduce((a, x) => ({ input: a.input + x.input, cacheWrite: a.cacheWrite + x.cacheWrite, cached: a.cached + x.cached, output: a.output + x.output }), { input: 0, cacheWrite: 0, cached: 0, output: 0 }) : null;
   return { client: 'claude', start, end, cwd, model, mode: topMode(modes), ev, reasoning, usage, usageEvents };
@@ -132,12 +135,14 @@ function codexItem(it, ts, sink) {
   }
 }
 
-export async function readCodex(file) {
-  const items = { ev: [], reasoning: [], cwd: null }; let usage = null; const usageEvents = []; let interrupts = 0;
-  const ev = []; const reasoning = []; const pend = new Map(); let start = null, end = null, cwd = null, model = null; const modes = {};
-  for await (const l of lines(file)) {
+export async function readCodex(file, options = {}) {
+  const state = options.state || {}; state.dirty = new Set();
+  const items = state.items ||= { ev: [], reasoning: [], cwd: null }; const usageEvents = state.usageEvents ||= [];
+  let { usage = null, interrupts = 0, start = null, end = null, cwd = null, model = null } = state;
+  const ev = state.ev ||= []; const reasoning = state.reasoning ||= []; const pend = state.pend ||= new Map(); const modes = state.modes ||= {};
+  for await (const l of options.lines || lines(file)) {
     const head = l.slice(0, 220);
-    if (head.includes('"item_completed"')) { const d = safeJSON(l); const it = d?.payload?.item; if (it) codexItem(it, d.timestamp, items); continue; }
+    if (head.includes('"item_completed"')) { const d = safeJSON(l); const it = d?.payload?.item; if (it) { codexItem(it, d.timestamp, items); start ??= d.timestamp; end = d.timestamp || end; } continue; }
     if (head.includes('"token_count"')) {
       const d = safeJSON(l); const info = d?.payload?.info; const last = info?.last_token_usage;
       if (info?.total_token_usage) usage = info.total_token_usage;
@@ -160,7 +165,7 @@ export async function readCodex(file) {
       continue;
     }
     if (l.length > 80000 && /_call_output"/.test(l.slice(0, 400))) {
-      const id = l.match(/"call_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id);
+      const id = l.match(/"call_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id); if (e) { state.dirty.add(e); delete e.pending; const completedAt = l.match(/"timestamp"\s*:\s*"([^"]+)"/)?.[1]; if (completedAt) e.completedAt = completedAt; }
       if (e) { const tail = l.slice(0, 3000); if (/Script failed|exited with code [1-9]|Exit code:? [1-9]/.test(tail)) { e.err = true; const at = tail.indexOf('output'); e.errText = tail.slice(at, at + 400); } }
       continue;
     }
@@ -179,10 +184,10 @@ export async function readCodex(file) {
       const cmds = [...src.matchAll(/cmd\\?"?\s*:\s*\\?"((?:[^"\\]|\\.)*)/g)].map((m) => m[1].replace(/\\n/g, ' ').replace(/\\"/g, '"'));
       const patch = [...src.matchAll(/\*\*\* (?:Update|Add|Delete) File: ([^\s\\]+)/g)].map((m) => m[1]);
       const e = patch.length ? { tool: 'apply_patch', target: patch[0] } : cmds.length ? { tool: 'Bash', target: cmds[0] } : { tool: p.name || 'tool', target: src.slice(0, 160) };
-      const ee = { k: 'tool', ts, client: 'codex', rawTool: p.name, err: false, denied: false, errText: '', ...e, target: e.target.slice(0, 240) };
+      const ee = { k: 'tool', ts, client: 'codex', rawTool: p.name, pending: true, err: false, denied: false, errText: '', ...e, target: e.target.slice(0, 240) };
       pend.set(p.call_id, ee); ev.push(ee);
     } else if (/_call_output$/.test(p.type || '')) {
-      const e = pend.get(p.call_id); if (!e) continue;
+      const e = pend.get(p.call_id); if (!e) continue; state.dirty.add(e); delete e.pending; if (ts) e.completedAt = ts;
       const o = typeof p.output === 'string' ? p.output : (p.output || []).map((x) => x.text || '').join(' ');
       const head3 = o.slice(0, 3000);
       if (!/^Script failed|exited with code [1-9]|Exit code:? [1-9]|"exit_code":\s*[1-9]/.test(head3) && SHIP.test(e.target)) e.out = head3.slice(0, 300);
@@ -198,6 +203,7 @@ export async function readCodex(file) {
     }
   }
   // Structured items when the rollout has them (current Codex), raw items otherwise (older rollouts).
+  Object.assign(state, { usage, interrupts, start, end, cwd, model });
   const useItems = items.ev.length > 0;
   return { client: 'codex', start, end, cwd: cwd || items.cwd, model, mode: topMode(modes), ev: useItems ? items.ev : ev, reasoning: useItems ? items.reasoning : reasoning,
     usage: usage ? { input: usage.input_tokens | 0, cached: usage.cached_input_tokens | 0, output: usage.output_tokens | 0, reasoning: usage.reasoning_output_tokens | 0 } : null, usageEvents: useItems ? usageEvents : [], interrupts, format: useItems ? 'items' : 'raw' };

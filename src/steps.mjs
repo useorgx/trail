@@ -32,7 +32,7 @@ const FAIL = /\b[1-9]\d* (failed|failing|errors?)\b|\bFAIL\b|error TS\d+|✗|✘
 export function stepFacts(e) {
   const x = e.target || ''; const action = (ACTIONS.find(([, f]) => f(e.tool, x, e.rawTool)) || ['run'])[0];
   const out = `${e.out || ''} ${e.outTail || ''}`;
-  const result = e.denied ? 'denied' : e.err ? 'fail' : FAIL.test(out) ? 'fail' : PASS.test(out) ? 'pass' : 'ok';
+  const result = e.pending ? 'pending' : e.denied ? 'denied' : e.err ? 'fail' : FAIL.test(out) ? 'fail' : PASS.test(out) ? 'pass' : 'ok';
   const pr = `${x} ${out}`.match(/pull\/(\d+)|\bPR #(\d+)|#(\d{3,6})\b/);
   // Edits to code (not docs, notes or config prose): what a check after the change is for.
   const code = action === 'edit' && /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|c|cc|cpp|h|hpp|sql|vue|svelte|sh)\b/.test(x);
@@ -104,7 +104,7 @@ export function steps(s, lang = { reasoning: [], full: [] }) {
   for (let i = 0; i <= s.ev.length; i++) {
     while (r < think.length && think[r].i <= i) { const t = think[r++]; out.push({ at: t.i, kind: 'think', text: t.text, ...tagStep(t.text, 'think') }); }
     const e = s.ev[i]; if (!e) continue;
-    if (e.k === 'tool') out.push({ at: i, kind: 'tool', ts: e.ts, tool: e.tool, target: e.target, ...(e.err ? { errText: String(e.errText || '').slice(0, 300) } : {}), ...((e.out || e.outTail) ? { out: String(e.out || e.outTail).slice(0, 300) } : {}), ...(e.rejected ? { rejected: true } : {}), ...stepFacts(e) });
+    if (e.k === 'tool') out.push({ at: i, kind: 'tool', ts: e.ts, ...(e.completedAt ? { completedAt: e.completedAt } : {}), tool: e.tool, target: e.target, ...(e.err ? { errText: String(e.errText || '').slice(0, 300) } : {}), ...((e.out || e.outTail) ? { out: String(e.out || e.outTail).slice(0, 300) } : {}), ...(e.rejected ? { rejected: true } : {}), ...stepFacts(e) });
     else if (e.k === 'say' || e.k === 'ask') { const text = full.get(i) || e.full || e.text; out.push({ at: i, kind: e.k, ts: e.ts, text, ...(e.who ? { who: e.who } : {}), ...tagStep(text, e.k) }); }
   }
   return out;
