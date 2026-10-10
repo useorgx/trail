@@ -9,7 +9,7 @@ import { isShip, isVerification } from './steps.mjs';
 import { HOME } from './store.mjs';
 import { isCorrection } from './precedent.mjs';
 
-// Jev's independent read of each goal's outcome, from `trail deepen` (opt-in). When it agrees with the steps, the
+// Jev's second read of each goal's outcome, from `trail deepen` (opt-in). When it agrees with the steps, the
 // call is trusted; when it disagrees, the goal is marked unsure. Keyed by session, root thread and the goal's spans.
 export const GOAL_JEV = path.join(HOME, 'goals-jev.json');
 export const goalKey = (sessionId, g) => `${sessionId}:${g.root}:${crypto.createHash('sha1').update(JSON.stringify(g.spans)).digest('hex').slice(0, 10)}`;
@@ -23,7 +23,7 @@ const OUTCOME_CONF = { shipped_checked: 0.95, shipped_unchecked: 0.85, verified_
 export const OUTCOME_STATUS = { shipped_checked: 'done', shipped_unchecked: 'done', verified_change: 'done', reported_change: 'done', answered: 'done', handed_back: 'parked', blocked_reported: 'parked', blocked_wall: 'dropped', abandoned: 'dropped', open: 'open', unclear: 'unclear' };
 
 /** @param {{ev:any[]}} s session · @param {{threads:any[]}} r threadify result · @param {any[]} st steps(s, lang) */
-export function buildGoals(s, r, st, { sessionId } = {}) {
+export function buildGoals(s, r, st, { sessionId, readJev = jevGoal } = {}) {
   const byId = new Map(r.threads.map((t) => [t.id, t]));
   const rootOf = (t, seen = new Set()) => {
     if (seen.has(t.id)) return t; seen.add(t.id);
@@ -59,10 +59,15 @@ export function buildGoals(s, r, st, { sessionId } = {}) {
       boundary: g.episodes.length === 0 ? 0.9 : g.episodes.every((e) => e.kind === 'recovery' || e.kind === 'wall') ? 0.85 : 0.7,
       backtracks: g.backtracks.length ? Math.max(...g.backtracks.map((b) => (b.seen === 'both' ? 0.9 : b.seen === 'jev' ? 0.75 : 0.6))) : talk >= 3 ? 0.7 : 0.5,
     };
-    // Two independent reads: the steps and Jev. Agreement is the strongest signal we have that a call is right
+    // These reads are correlated: the steps may already use Jev's tags. Agreement corroborates a belief.
     // (lab, vs Codex labels: agree 79-82% right; agree with Jev >= 0.8 sure, 92-100% on ~13% of goals).
-    const j = sessionId && jevGoal(goalKey(sessionId, g));
-    if (j) { g.jev = { status: j[0], conf: j[1] }; g.agree = j[0] === g.status; g.conf.outcome = g.agree ? (j[1] >= 0.8 ? 0.97 : 0.85) : 0.35; g.verified = g.agree && j[1] >= 0.8; }
+    const j = sessionId && readJev(goalKey(sessionId, g));
+    if (j) {
+      g.jev = { status: j[0], conf: j[1] }; g.agree = j[0] === g.status;
+      g.conf.outcome = g.agree ? (j[1] >= 0.8 ? 0.97 : 0.85) : 0.35;
+      g.corroborated = g.agree && j[1] >= 0.8;
+      g.corroboration = { independent: false, calibration: '92–100% correct on approximately 13% of goals in the lab comparison with Codex labels; reads share Jev step tags.' };
+    }
     delete g.own;
   }
   return list;

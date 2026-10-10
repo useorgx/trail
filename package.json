@@ -46,7 +46,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "devDependencies": {
+  "dependencies": {
     "@useorgx/agent-work-receipt": "^0.2.0"
   }
 }

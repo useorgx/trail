@@ -6,8 +6,9 @@ import { discoverOpenCode, discoverCursor, discoverCursorIDE } from './adapters-
 import { redactDeep } from './redact.mjs';
 import { archivedOnly } from './archive.mjs';
 import { discoverCopilot, discoverGemini, discoverDroid } from './adapters-json.mjs';
+import { withIntegrity } from './integrity.mjs';
 
-export const VERSION = 'trail-2.0';
+export const VERSION = 'trail-2.1';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),
@@ -52,15 +53,41 @@ export function hardenStore() {
   return { files, changed };
 }
 /** Agent Work Receipts for one session's pieces of work (src/receipt.mjs), redacted like everything stored. */
-export function writeReceipts(id, receipts) { fs.mkdirSync(P.receipts, { recursive: true, mode: DIR_MODE }); writePrivate(path.join(P.receipts, id + '.json'), JSON.stringify(redactDeep(receipts))); }
-export const loadReceipts = (id) => readJSON(path.join(P.receipts, id + '.json'), []);
+export function writeReceipts(id, receipts) { fs.mkdirSync(P.receipts, { recursive: true, mode: DIR_MODE }); writePrivate(path.join(P.receipts, id + '.json'), JSON.stringify(redactDeep(receipts).map(withIntegrity))); }
+const CALIBRATION = '92–100% correct on approximately 13% of goals in the lab comparison with Codex labels; reads share Jev step tags.';
+function upgradeReceipt(receipt) {
+  const extension = receipt.extensions?.['org.orgx.trail/v1'];
+  if (!extension || !Object.hasOwn(extension, 'verified_by_two_reads')) return receipt;
+  const { verified_by_two_reads, ...rest } = extension;
+  return withIntegrity({ ...receipt, extensions: { ...receipt.extensions, 'org.orgx.trail/v1': { ...rest, corroborated_by_two_reads: !!verified_by_two_reads, corroboration: { independent: false, calibration: CALIBRATION } } } });
+}
+export const loadReceipts = (id) => readJSON(path.join(P.receipts, id + '.json'), []).map(upgradeReceipt);
 export const P_WORKSTREAMS = () => path.join(HOME, 'workstreams.json');
-export function allReceipts() { let n = []; try { n = fs.readdirSync(P.receipts); } catch { return []; } return n.filter((f) => f.endsWith('.json')).flatMap((f) => readJSON(path.join(P.receipts, f), [])); }
+export function allReceipts() {
+  let names = []; try { names = fs.readdirSync(P.receipts); } catch { return []; }
+  // A live goal is persisted independently; a later full scan supersedes its revision by file modification time.
+  const latest = new Map();
+  for (const name of names.filter((f) => f.endsWith('.json')).sort((a, b) => fs.statSync(path.join(P.receipts, a)).mtimeMs - fs.statSync(path.join(P.receipts, b)).mtimeMs)) {
+    for (const receipt of readJSON(path.join(P.receipts, name), [])) latest.set(receipt.receipt_id, receipt);
+  }
+  return [...latest.values()].map(upgradeReceipt);
+}
 export const loadLanguage = (id) => readJSON(path.join(P.language, id + '.json'), { reasoning: [], full: [] });
 export function loadSessions() {
   let names = []; try { names = fs.readdirSync(P.sessions); } catch { return []; }
   const out = [];
-  for (const n of names) { if (!n.endsWith('.json')) continue; const s = readJSON(path.join(P.sessions, n), null); if (s) out.push(s); }
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const s = readJSON(path.join(P.sessions, n), null);
+    if (s) {
+      if (s.goals) s.goals = s.goals.map((goal) => {
+        if (!Object.hasOwn(goal, 'verified')) return goal;
+        const { verified, ...rest } = goal;
+        return { ...rest, corroborated: !!verified, corroboration: { independent: false, calibration: CALIBRATION } };
+      });
+      out.push(s);
+    }
+  }
   return out.sort((a, b) => String(a.start).localeCompare(String(b.start)));
 }
 export const loadAdoptions = () => readJSON(P.adoptions, []);

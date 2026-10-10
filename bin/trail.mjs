@@ -7,6 +7,18 @@ if (process.argv[2] === 'guard' && process.argv[3] === 'hook') {
   const out = await runHook(input); if (out) process.stdout.write(JSON.stringify(out));
   process.exit(0);
 }
+if (process.argv[2] === 'receipt-hook') {
+  const { runReceiptHook, receiptHookWorker, installReceiptHooks, uninstallReceiptHooks, receiptHookStatus } = await import('../src/receipt-hooks.mjs');
+  const { fileURLToPath } = await import('node:url');
+  try {
+    if (process.argv[3] === 'worker') { const worker = await receiptHookWorker(); if (worker) await new Promise((resolve) => worker.server.once('close', resolve)); }
+    else if (process.argv[3] === 'run') { let input = ''; for await (const chunk of process.stdin) input += chunk; await runReceiptHook(input); }
+    else if (process.argv[3] === 'install') { const at = process.argv.indexOf('--base'); console.log(JSON.stringify(installReceiptHooks(fileURLToPath(import.meta.url), { base: at >= 0 ? process.argv[at + 1] : undefined }))); }
+    else if (process.argv[3] === 'uninstall') console.log(JSON.stringify(await uninstallReceiptHooks()));
+    else console.log(JSON.stringify(receiptHookStatus()));
+  } catch (error) { process.stderr.write(`trail receipt-hook: ${error.message}\n`); process.exitCode = 1; }
+  process.exit(process.exitCode || 0);
+}
 import { scanView } from '../src/ui/scanview.mjs';
 import { explore } from '../src/ui/explore.mjs';
 import { watch } from '../src/ui/watch.mjs';
@@ -30,7 +42,7 @@ const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : null;
 const flag = (k) => argv.includes('--' + k);
 const val = (k) => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : undefined; };
-const opts = { since: val('since') ? new Date(val('since')) : undefined, client: val('client'), rebuild: flag('rebuild'), plain: flag('plain') };
+const opts = { since: val('since') ? new Date(val('since')) : undefined, client: val('client'), rebuild: flag('rebuild'), plain: flag('plain'), receipts: flag('receipts'), base: val('base') };
 
 const HELP = `orgx trail — see what your coding agents did and where they got stuck. Local, no model, no upload.
 
@@ -38,7 +50,8 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail scan         read new work only (add --rebuild to reread everything)
   trail --demo       try it on a made-up history (reads nothing from your machine)
   trail explore      open the explorer
-  trail watch        follow the session being written right now
+  trail watch        follow incremental steps, goals and receipts (--receipts streams checkpoints to OrgX)
+  trail receipt-hook install|uninstall|status  enable automatic Claude Code receipt checkpoints (opt-in upload)
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
   trail deepen       get surer outcomes: Jev reads each step and piece of work · opt-in · quote shown first

@@ -7,9 +7,9 @@ Trail reads your Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCod
 npx @useorgx/trail
 ```
 
-- **Local.** Reads each client's own history on your machine, read-only: Claude Code, Codex (including its structured command, MCP and file-change records), Cursor (editor and agent), GitHub Copilot in VS Code, Gemini CLI, OpenCode and Factory Droid. Windsurf keeps its history encrypted, so it isn't read. Nothing is uploaded unless you run `trail sync`.
+- **Local.** Reads each client's own history on your machine, read-only: Claude Code, Codex (including its structured command, MCP and file-change records), Cursor (editor and agent), GitHub Copilot in VS Code, Gemini CLI, OpenCode and Factory Droid. Windsurf keeps its history encrypted, so it isn't read. Uploads require `trail sync`, `trail watch --receipts`, or opting in to automatic receipt hooks.
 - **Fast.** ~3,300 sessions (38 GB) in about 40 seconds; after that, only new work is read.
-- **Zero dependencies.** Small enough to read before you run it.
+- **Small.** The shared Agent Work Receipt package provides schema and canonicalization support.
 
 ## What you can do
 
@@ -21,7 +21,8 @@ npx @useorgx/trail
 | `trail workstreams` | pieces of work joined across sessions by a shared PR, branch, rarely touched files, a pasted id, or an explicit continuation; words alone never join (`<id>`, `--all`) |
 | `trail search <q>` | search your receipts: ranked text plus exact filters such as `outcome:blocked type:fix repo:app pr:12 conf:<0.6 unmet:tests` |
 | `trail review` / `trail label` | the questions about your own work only you can settle (did it get done, was a criterion met); answers win over every guess |
-| `trail deepen` | get more reliable outcomes. With your approval, Jev (TypeSafe's decision model) reads each step and piece of work. Trail marks an outcome verified when both reads agree. Pay with OrgX credits after `trail connect`, or use your own OpenRouter key with `--key-file`. Trail shows a quote first and sends nothing until you confirm. |
+| `trail deepen` | get more reliable outcomes. With your approval, Jev (TypeSafe's decision model) reads each step and piece of work. Trail marks an outcome corroborated when both reads agree at high confidence. The reads share Jev's step tags and are not independent; observed checks determine verification. Pay with OrgX credits after `trail connect`, or use your own OpenRouter key with `--key-file`. Trail shows a quote first and sends nothing until you confirm. |
+
 | `trail walls` | find a wall: a failure your agents keep hitting in separate sessions. Each wall includes a fix (`--json` for agents). |
 | `trail copy <id>` | copy a selected fix as a prompt, rule, or command |
 | `trail adopt <id>` | write a selected fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
@@ -36,6 +37,10 @@ npx @useorgx/trail
 | `trail credits` | the people whose work trail is built on |
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
 | `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first. Also sends the judgments you made along the way (corrections, rejected tool calls, denials, rules you stated) so OrgX can turn them into precedents; they are kept locally in `~/.orgx/trail/precedent-candidates.jsonl` until then |
+
+`trail watch` now tails Claude Code and Codex JSONL by byte offset and builds local goal receipts as work changes. Add `--receipts` to stream provisional checkpoints to OrgX; a final receipt follows 30 minutes without material activity, after outstanding tool calls finish. Receipt hashes use the AWR RFC 8785 content hash and cover every field except integrity, including evidence excerpts. Other transcript formats use their existing snapshot readers.
+
+After `trail connect`, `trail receipt-hook install` enables automatic Claude Code uploads through UserPromptSubmit, PostToolUse and Stop hooks. A private local worker retains the byte cursor and pending calls across hook invocations. `trail receipt-hook status` shows the integration, and `trail receipt-hook uninstall` removes it while retaining your other hooks and settings. Watch and hook uploads carry the same asks, summaries and excerpts as `trail sync --receipts`, with secret redaction and your configured personal-data masking.
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 

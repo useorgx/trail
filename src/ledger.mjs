@@ -6,6 +6,7 @@ import { allReceipts, P_WORKSTREAMS } from './store.mjs';
 import { EXT } from './receipt.mjs';
 import { buildWorkstreams, parentsFor, JOIN_THRESHOLD } from './workstreams.mjs';
 import { loadTaxonomy, labelAll, LOW } from './taxonomy.mjs';
+import { withIntegrity } from './integrity.mjs';
 
 let cache = null;
 /** Build (or reuse) the ledger. `persist` writes workstreams.json. */
@@ -58,7 +59,7 @@ export function withGraph(r0, L) {
   const { r, e } = reviewed(r0, L); const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
   const parents = (L.parents[r.receipt_id] || []).map((p) => ({ system: 'orgx-trail', type: 'agent_work_receipt', id: p.id, metadata: { relationship: p.relationship, confidence: p.confidence, linker: L.built.linker } }));
   const links = L.built.links.filter((l) => l.to === r.receipt_id || l.from === r.receipt_id).slice(0, 20);
-  return {
+  return withIntegrity({
     ...r,
     lineage: { ...r.lineage, parent_receipt_refs: parents, ...(ws ? { workstream_ref: { system: 'orgx-trail', type: 'workstream', id: ws } } : {}),
       references: [...r.lineage.references, ...links.filter((l) => l.to === r.receipt_id && l.confidence >= JOIN_THRESHOLD).map((l) => ({ relationship: l.relationship, ref: { system: 'orgx-trail', type: 'agent_work_receipt', id: l.from }, confidence: l.confidence }))].slice(0, 200) },
@@ -69,7 +70,7 @@ export function withGraph(r0, L) {
       suggested_links: L.built.suggestions.filter((x) => x.to === r.receipt_id).slice(0, 5).map(({ from, relationship, confidence, evidence }) => ({ from, relationship, confidence, evidence })),
       links: links.map((l) => ({ from: l.from, to: l.to, relationship: l.relationship, confidence: l.confidence, evidence: l.evidence })),
     } },
-  };
+  });
 }
 
 /**

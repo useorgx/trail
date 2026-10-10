@@ -8,6 +8,7 @@ import { isShip, isVerification } from './steps.mjs';
 import { VERSION } from './store.mjs';
 import { isCorrection, precedentLineage, PRECEDENT_EXT } from './precedent.mjs';
 import { buildReview, REVIEW_EXT } from './review.mjs';
+import { withIntegrity } from './integrity.mjs';
 
 export const SCHEMA_VERSION = 'agent-work-receipt/v0.2';
 export const EXT = 'org.orgx.trail/v1';
@@ -63,7 +64,7 @@ export function extractIntent(ask) {
 
 /** Each criterion met / unmet / unknown, with the evidence step that decided it. */
 export function checkCriteria(criteria, mine, evidenceFor) {
-  const tools = mine.filter((x) => x.kind === 'tool'); const says = mine.filter((x) => x.kind === 'say');
+  const tools = mine.filter((x) => x.kind === 'tool' && x.result !== 'pending'); const says = mine.filter((x) => x.kind === 'say');
   const lastCode = Math.max(-1, ...tools.filter((x) => x.action === 'edit' && x.code).map((x) => x.at));
   const lastEdit = Math.max(-1, ...tools.filter((x) => x.action === 'edit').map((x) => x.at));
   const after = (acts) => tools.filter((x) => acts.includes(x.action) && x.at > lastCode);
@@ -93,7 +94,7 @@ function artifacts(mine, finalText, receiptId, sessionRef) {
   const tools = mine.filter((x) => x.kind === 'tool'); const out = []; const seen = new Set();
   const shippedAt = Math.max(-1, ...tools.filter((x) => (x.action === 'commit' || isShip(x)) && x.result !== 'fail').map((x) => x.at));
   for (const t of tools) {
-    if (t.action !== 'edit' || !t.target || t.result === 'fail' || seen.has(t.target)) continue; seen.add(t.target);
+    if (t.action !== 'edit' || !t.target || ['fail', 'pending'].includes(t.result) || seen.has(t.target)) continue; seen.add(t.target);
     const named = finalText && base(t.target).length > 3 && finalText.includes(base(t.target));
     const role = (shippedAt > t.at || named) ? 'output' : 'intermediate';
     out.push({ id: `file-${out.length + 1}`, kind: t.code ? 'source_file' : 'file', name: clip(base(t.target), 200) || 'file', role, ref: { system: 'workspace', type: 'file', id: clip(t.target, 500) }, ...(iso(t.ts) ? { created_at: iso(t.ts) } : {}), metadata: { decided_by: role === 'output' ? (named ? 'named_in_closing_message' : 'committed_or_shipped_after') : 'edited_not_delivered' } });
@@ -126,9 +127,10 @@ export const receiptIdOf = (session, rootThread) => `trail:${session.client}:${s
  */
 export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   const own = new Set(); for (const [a, b] of goal.spans || []) for (let i = a; i <= b; i++) own.add(i);
-  const mine = steps.filter((x) => own.has(x.at) || (x.kind === 'think' && own.has(Math.min(x.at, Math.max(...own)))));
+  const lastOwned = Math.max(-1, ...own);
+  const mine = steps.filter((x) => own.has(x.at) || (x.kind === 'think' && own.has(Math.min(x.at, lastOwned))));
   const ask = thread?.ask || goal.title || ''; const receiptId = receiptIdOf(session, goal.root);
-  const times = mine.map((x) => iso(x.ts)).filter(Boolean); const started = times[0] || iso(session.start) || new Date(0).toISOString(); const completed = times[times.length - 1] || iso(session.end) || started;
+  const times = mine.flatMap((x) => [iso(x.ts), iso(x.completedAt)]).filter(Boolean).sort(); const started = times[0] || iso(session.start) || new Date(0).toISOString(); const completed = times[times.length - 1] || iso(session.end) || started;
   const sessionRef = { system: session.client, type: 'session', id: String(session.id) };
   const says = mine.filter((x) => x.kind === 'say'); const finalText = says.length ? String(says[says.length - 1].text || '') : '';
 
@@ -137,7 +139,7 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   const addEvidence = (step, kind, summary, excerpt) => {
     if (evId.has(step.at)) return evId.get(step.at);
     const id = `ev-${step.at}`; evId.set(step.at, id);
-    evidence.push({ id, kind, summary: nonEmpty(clip(summary, 500), kind), observed_at: iso(step.ts) || completed, ...(clip(excerpt, 1200) ? { excerpt: clip(excerpt, 1200) } : {}), ref: { system: session.client, type: 'transcript_event', id: `${session.id}#${step.at}` } });
+    evidence.push({ id, kind, summary: nonEmpty(clip(summary, 500), kind), observed_at: iso(step.completedAt) || iso(step.ts) || completed, ...(clip(excerpt, 1200) ? { excerpt: clip(excerpt, 1200) } : {}), ref: { system: session.client, type: 'transcript_event', id: `${session.id}#${step.at}` } });
     return id;
   };
   const evidenceFor = (step) => (step.kind === 'tool' ? addEvidence(step, isVerification(step) || ['test', 'typecheck', 'lint', 'build'].includes(step.action) ? 'check_output' : isShip(step) ? 'ship_output' : 'tool_output', `${step.action} ${step.result}: ${step.target || step.tool}`, step.out || step.errText) : addEvidence(step, 'agent_report', firstSentence(step.text), step.text));
@@ -147,7 +149,7 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   // Every check that ran after the last change is a verification check, criteria or not.
   const tools = mine.filter((x) => x.kind === 'tool');
   const lastChange = Math.max(-1, ...tools.filter((x) => x.action === 'edit').map((x) => x.at));
-  const runChecks = tools.filter((x) => ['test', 'typecheck', 'lint', 'build'].includes(x.action) && x.at > lastChange && x.result !== 'denied');
+  const runChecks = tools.filter((x) => ['test', 'typecheck', 'lint', 'build'].includes(x.action) && x.at > lastChange && !['denied', 'pending'].includes(x.result));
   const checks = [
     ...runChecks.map((x) => ({ id: `check-${x.at}`, name: `${x.action}: ${clip(x.target, 120) || x.action}`, status: x.result === 'fail' ? 'failed' : x.result === 'pass' ? 'passed' : 'inconclusive', method: x.result === 'ok' ? 'Ran without a failure; output did not state a pass count.' : 'Pass/fail read from the command output.', evidence_ids: [evidenceFor(x)] })),
     ...checked.filter((c) => c.status !== 'unknown').map((c) => ({ id: `criterion-${c.id}`, name: c.text, status: c.status === 'met' ? 'passed' : 'failed', method: `Acceptance criterion (${c.kind}) matched to evidence by trail rules.`, evidence_ids: c.evidence_ids, criterion_ids: [c.id] })),
@@ -159,7 +161,7 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
 
   // Actions: every tool step (bounded), with the file or command it touched.
   const toolSteps = tools.length > 300 ? [...tools.slice(0, 150), ...tools.slice(-150)] : tools;
-  const actions = toolSteps.map((x) => ({ id: `step-${x.at}`, type: `${String(x.tool || 'tool').toLowerCase().replace(/[^a-z0-9_.-]/g, '_').slice(0, 60)}.${x.action}`, summary: nonEmpty(clip(x.target, 300), `${x.tool} ${x.action}`), status: x.result === 'denied' ? 'blocked' : x.result === 'fail' ? 'failed' : 'completed', system: session.client, ...(isPath(x.target) ? { target_refs: [{ system: 'workspace', type: 'file', id: clip(x.target, 500) }] } : {}), started_at: iso(x.ts) || started, completed_at: iso(x.ts) || started, ...(x.result === 'fail' || x.result === 'denied' ? { error: nonEmpty(clip(x.errText, 500), x.result) } : {}) }));
+  const actions = toolSteps.map((x) => ({ id: `step-${x.at}`, type: `${String(x.tool || 'tool').toLowerCase().replace(/[^a-z0-9_.-]/g, '_').slice(0, 60)}.${x.action}`, summary: nonEmpty(clip(x.target, 300), `${x.tool} ${x.action}`), status: x.result === 'pending' ? 'running' : x.result === 'denied' ? 'blocked' : x.result === 'fail' ? 'failed' : 'completed', system: session.client, ...(isPath(x.target) ? { target_refs: [{ system: 'workspace', type: 'file', id: clip(x.target, 500) }] } : {}), started_at: iso(x.ts) || started, completed_at: iso(x.completedAt) || iso(x.ts) || started, ...(x.result === 'fail' || x.result === 'denied' ? { error: nonEmpty(clip(x.errText, 500), x.result) } : {}) }));
   if (!actions.length) actions.push({ id: 'no-tools', type: 'conversation.reply', summary: 'Answered without using tools.', status: 'completed', system: session.client, started_at: started, completed_at: completed });
 
   // Where a person stepped in: every later message from them inside this piece of work.
@@ -204,7 +206,8 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
       confidence: { outcome: goal.conf?.outcome ?? null, boundary: goal.conf?.boundary ?? null, backtracks: goal.conf?.backtracks ?? null, criteria: checked.length ? +Math.min(...checked.map((c) => c.confidence)).toFixed(2) : null },
       criteria: checked.map(({ id, kind, text, status, confidence, evidence_ids }) => ({ id, kind, text, status, confidence, evidence_ids })),
       episodes: goal.episodes || [], changes_of_course: (goal.backtracks || []).map((b) => ({ at: b.at, trigger: b.trigger, evidence: `${session.id}#${b.at}` })),
-      verified_by_two_reads: goal.verified || false,
+      corroborated_by_two_reads: goal.corroborated || false,
+      ...(goal.corroboration ? { corroboration: goal.corroboration } : {}),
       provenance: { intent: 'observed (the ask)', criteria: 'rules over the ask', outcome: goal.jev ? 'steps + Jev' : 'rules over the steps', artifacts_roles: 'rules', cost: goal.cost ? 'estimated' : 'none' },
     }, ...(prec.extension ? { [PRECEDENT_EXT]: prec.extension } : {}) },
   };
@@ -214,5 +217,5 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
   } catch (err) {
     receipt.extensions[EXT].review_error = String(err?.message || err).slice(0, 200);
   }
-  return receipt;
+  return withIntegrity(receipt);
 }
