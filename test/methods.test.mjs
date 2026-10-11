@@ -20,7 +20,7 @@ function catalog(version = 1, overrides = {}) {
       authority_owner_id: OWNER, owner_id: OWNER, title: 'Open a branch', ruling: 'Use a branch for each change.', mode: 'warn',
       scope: { kind: 'workspace', id: WORKSPACE }, applies_to: {}, steps: ['Open a branch', 'Run the required check'],
       prerequisites: ['Repository access'], exceptions: ['Owner approved recovery'], supporting_evidence: ['orgx://receipts/source'],
-      ratification_ref: 'orgx://decisions/44444444-4444-4444-8444-444444444444', ratification_kind: 'decision', authority_ref: 'orgx://decisions/current',
+      ratification_ref: 'orgx://decisions/44444444-4444-4444-8444-444444444444', ratification_kind: 'decision', ratification_event_hash: digest('d'), authority_ref: 'orgx://decisions/current',
       authority_event_hash: digest('c'), valid_from: '2026-01-01T00:00:00.000Z', valid_until: null, status: 'effective',
       revocation: { checked_at: now, head_version: version, revoked_at: null }, ...overrides }] };
 }
@@ -81,7 +81,11 @@ test('a current human shadow rewrite withdraws the prior managed instructions', 
   const removed = planMethodPublication(installed, shadow, expected(shadow));
   assert.equal(removed.operation, 'removed'); assert.equal(removed.text, original);
 });
-test('canonical no-Decision human ratification carries its real provenance without a fabricated Decision', () => {
+test('a Decision reference without its canonical ratification event hash is refused', () => {
+  const value = catalog(1, { ratification_event_hash: undefined });
+  assert.throws(() => planMethodPublication('Owner text', value, expected(value)), /ratified authority witness/);
+});
+test('canonical human ratification carries its real provenance without a fabricated Decision', () => {
   const value = catalog(1, { ratification_kind: 'canonical_human_ratification',
     ratification_ref: 'orgx://precedents/method:branch/ratify/44444444-4444-4444-8444-444444444444', ratification_event_hash: digest('d'),
     authority_ref: 'orgx://precedents/method:branch/edit/55555555-5555-4555-8555-555555555555' });
