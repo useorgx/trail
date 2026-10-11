@@ -20,7 +20,7 @@ function catalog(version = 1, overrides = {}) {
       authority_owner_id: OWNER, owner_id: OWNER, title: 'Open a branch', ruling: 'Use a branch for each change.', mode: 'warn',
       scope: { kind: 'workspace', id: WORKSPACE }, applies_to: {}, steps: ['Open a branch', 'Run the required check'],
       prerequisites: ['Repository access'], exceptions: ['Owner approved recovery'], supporting_evidence: ['orgx://receipts/source'],
-      ratification_ref: 'orgx://decisions/44444444-4444-4444-8444-444444444444', authority_ref: 'orgx://decisions/current',
+      ratification_ref: 'orgx://decisions/44444444-4444-4444-8444-444444444444', ratification_kind: 'decision', authority_ref: 'orgx://decisions/current',
       authority_event_hash: digest('c'), valid_from: '2026-01-01T00:00:00.000Z', valid_until: null, status: 'effective',
       revocation: { checked_at: now, head_version: version, revoked_at: null }, ...overrides }] };
 }
@@ -80,6 +80,15 @@ test('a current human shadow rewrite withdraws the prior managed instructions', 
   const shadow = catalog(2, { mode: 'shadow', status: 'inactive' });
   const removed = planMethodPublication(installed, shadow, expected(shadow));
   assert.equal(removed.operation, 'removed'); assert.equal(removed.text, original);
+});
+test('canonical no-Decision human ratification carries its real provenance without a fabricated Decision', () => {
+  const value = catalog(1, { ratification_kind: 'canonical_human_ratification',
+    ratification_ref: 'orgx://precedents/method:branch/ratify/44444444-4444-4444-8444-444444444444', ratification_event_hash: digest('d'),
+    authority_ref: 'orgx://precedents/method:branch/edit/55555555-5555-4555-8555-555555555555' });
+  const plan = planMethodPublication('Owner text', value, expected(value));
+  assert.match(plan.text, /Ratification: orgx:\/\/precedents\/method:branch\/ratify\//);
+  assert.doesNotMatch(plan.text, /orgx:\/\/decisions\//);
+  assert.throws(() => planMethodPublication('Owner text', catalog(1, { ...value.methods[0], ratification_event_hash: undefined }), expected(value)), /authority witness/);
 });
 test('a held publisher lock refuses another publisher without changing the target', async (t) => {
   const fixture = repository(t); const value = catalog(); const lock = path.join(fixture.repo, '.orgx-methods.lock'); fs.writeFileSync(lock, 'other publisher');
@@ -143,4 +152,18 @@ test('early CLI canonical method listing does not read the hidden session store'
   let stdout = ''; let stderr = ''; child.stdout.on('data', (chunk) => stdout += chunk); child.stderr.on('data', (chunk) => stderr += chunk);
   const code = await new Promise((resolve) => child.on('close', resolve)); assert.equal(code, 0, stderr); assert.equal(JSON.parse(stdout).catalog.methods.length, 1);
   assert.deepEqual(fs.readdirSync(forbidden), []);
+});
+test('CLI drains a large bounded catalog into a pipe before exit', async (t) => {
+  const value = { ...catalog(), schema_version: 'orgx.ratified-method-index/v1',
+    methods: Array.from({ length: 200 }, (_, index) => ({ id: `method:${index}`, version: 1, digest: digest('a'), title: 'x'.repeat(200), status: 'effective', scope: { kind: 'workspace', id: WORKSPACE } })) };
+  const server = http.createServer((_request, response) => { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ ok: true, data: value })); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/trail.mjs', import.meta.url)), 'methods', 'list', '--workspace', WORKSPACE, '--base', `http://127.0.0.1:${server.address().port}`], { env: { ...process.env, ORGX_API_KEY: 'test-key' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const closed = new Promise((resolve) => child.on('close', resolve));
+  let stdout = ''; let stderr = ''; child.stderr.on('data', (chunk) => stderr += chunk);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  child.stdout.on('data', (chunk) => stdout += chunk);
+  const code = await closed;
+  assert.equal(code, 0, stderr); assert.equal(JSON.parse(stdout).catalog.methods.length, 200);
+  assert.equal(JSON.parse(stdout).catalog.methods.at(-1).title, 'x'.repeat(200));
 });

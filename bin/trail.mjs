@@ -1,11 +1,5 @@
 #!/usr/bin/env node
 // orgx trail — see what your coding agents actually did, on your machine, in seconds.
-if (process.argv[2] === 'methods') {
-  const { methodsCommand } = await import('../src/methods-cli.mjs');
-  try { console.log(JSON.stringify(await methodsCommand(process.argv.slice(3)), null, 2)); }
-  catch (error) { process.stderr.write(`trail methods: ${error.message}\n`); process.exitCode = 1; }
-  process.exit(process.exitCode || 0);
-}
 if (process.argv[2] === 'mcp') { const { serveMcp } = await import('../src/mcp.mjs'); await serveMcp(); process.exit(0); }
 if (process.argv[2] === 'guard' && process.argv[3] === 'hook') {
   const { runHook } = await import('../src/guard.mjs');
@@ -91,7 +85,12 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   --since 2026-09-01   --client claude|codex|opencode|cursor   --plain   --rebuild
   Data: ${P.sessions}`;
 
-if (flag('help') || cmd === 'help') console.log(HELP);
+if (cmd === 'methods') {
+  const { methodsCommand } = await import('../src/methods-cli.mjs');
+  try { console.log(JSON.stringify(await methodsCommand(argv.slice(1)), null, 2)); }
+  catch (error) { process.stderr.write(`trail methods: ${error.message}\n`); process.exitCode = 1; }
+}
+else if (flag('help') || cmd === 'help') console.log(HELP);
 else if (flag('demo') || cmd === 'demo') { const { demo } = await import('../src/demo.mjs'); await demo(fileURLToPath(import.meta.url)); }
 else if (cmd === 'scan') await scanView(opts);
 else if (cmd === 'explore') await explore();

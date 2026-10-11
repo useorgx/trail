@@ -21,7 +21,9 @@ function validateMethod(catalog, expected) {
   assert(Number.isSafeInteger(method.version) && method.version > 0 && Number.isSafeInteger(method.method_version) && method.method_version > 0 &&
     ['effective', 'revoked', 'inactive'].includes(method.status) && ['shadow', 'inform', 'warn', 'block'].includes(method.mode) &&
     method.revocation?.head_version === method.version && method.revocation.checked_at === catalog.read_at &&
-    typeof method.ratification_ref === 'string' && method.ratification_ref.startsWith('orgx://decisions/') &&
+    typeof method.ratification_ref === 'string' &&
+    ((method.ratification_kind === 'decision' && method.ratification_ref.startsWith('orgx://decisions/')) ||
+      (method.ratification_kind === 'canonical_human_ratification' && method.ratification_ref.startsWith(`orgx://precedents/${method.id}/ratify/`) && digestPattern.test(method.ratification_event_hash))) &&
     digestPattern.test(method.authority_event_hash), 'The method has no current ratified authority witness.');
   for (const [key, limit, length] of [['steps', 30, 1000], ['prerequisites', 20, 500], ['exceptions', 20, 500], ['supporting_evidence', 50, 500]]) {
     assert(Array.isArray(method[key]) && method[key].length <= limit && (key !== 'steps' || method[key].length > 0) &&
