@@ -64,6 +64,7 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail goals        show each piece of work, its detours, its result, and each change of course   (--json)
   trail walls        find a wall: a failure your agents keep hitting in separate sessions   (--json for agents)
   trail adopt <id>   write a selected fix into AGENTS.md / CLAUDE.md        (--to <file>)
+  trail methods list|publish|remove  deliver a current ratified OrgX method (--workspace <id>; publish is preview until --yes)
   trail copy <id>    copy a selected fix: --as prompt (default) | rule | command
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
   trail experiments  did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals)
@@ -84,7 +85,12 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   --since 2026-09-01   --client claude|codex|opencode|cursor   --plain   --rebuild
   Data: ${P.sessions}`;
 
-if (flag('help') || cmd === 'help') console.log(HELP);
+if (cmd === 'methods') {
+  const { methodsCommand } = await import('../src/methods-cli.mjs');
+  try { console.log(JSON.stringify(await methodsCommand(argv.slice(1)), null, 2)); }
+  catch (error) { process.stderr.write(`trail methods: ${error.message}\n`); process.exitCode = 1; }
+}
+else if (flag('help') || cmd === 'help') console.log(HELP);
 else if (flag('demo') || cmd === 'demo') { const { demo } = await import('../src/demo.mjs'); await demo(fileURLToPath(import.meta.url)); }
 else if (cmd === 'scan') await scanView(opts);
 else if (cmd === 'explore') await explore();
