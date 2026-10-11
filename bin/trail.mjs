@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 // orgx trail — see what your coding agents actually did, on your machine, in seconds.
+if (process.argv[2] === 'methods') {
+  const { methodsCommand } = await import('../src/methods-cli.mjs');
+  try { console.log(JSON.stringify(await methodsCommand(process.argv.slice(3)), null, 2)); }
+  catch (error) { process.stderr.write(`trail methods: ${error.message}\n`); process.exitCode = 1; }
+  process.exit(process.exitCode || 0);
+}
 if (process.argv[2] === 'mcp') { const { serveMcp } = await import('../src/mcp.mjs'); await serveMcp(); process.exit(0); }
 if (process.argv[2] === 'guard' && process.argv[3] === 'hook') {
   const { runHook } = await import('../src/guard.mjs');
@@ -64,6 +70,7 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail goals        show each piece of work, its detours, its result, and each change of course   (--json)
   trail walls        find a wall: a failure your agents keep hitting in separate sessions   (--json for agents)
   trail adopt <id>   write a selected fix into AGENTS.md / CLAUDE.md        (--to <file>)
+  trail methods list|publish|remove  deliver a current ratified OrgX method (--workspace <id>; publish is preview until --yes)
   trail copy <id>    copy a selected fix: --as prompt (default) | rule | command
   trail unadopt <id> remove a fix trail wrote into CLAUDE.md / AGENTS.md
   trail experiments  did your AGENTS.md / CLAUDE.md edits change agent behavior? (95% intervals)
