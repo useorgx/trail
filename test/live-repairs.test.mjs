@@ -156,11 +156,13 @@ test('R3: filesystem changes send provisional checkpoints automatically and sett
 });
 
 test('R5 performance: every appended goal checkpoint on a 10 MB transcript completes under 100 ms', async (t) => {
-  const rows = []; const payload = 'tool output '.repeat(450); let index = 0;
-  while (rows.join('').length < 10 * 1024 * 1024) {
-    rows.push(ask(`Implement independent feature ${index}`));
-    for (let k = 0; k < 10; k++) rows.push(tool(`${index}-${k}`, 'npm test'), result(`${index}-${k}`, payload + '\n10 passed'));
-    rows.push(report('The implementation and tests are complete. '.repeat(8))); index++;
+  const rows = []; const payload = 'tool output '.repeat(450); let index = 0; let bytes = 0;
+  while (bytes < 10 * 1024 * 1024) {
+    const next = [ask(`Implement independent feature ${index}`)];
+    for (let k = 0; k < 10; k++) next.push(tool(`${index}-${k}`, 'npm test'), result(`${index}-${k}`, payload + '\n10 passed'));
+    next.push(report('The implementation and tests are complete. '.repeat(8)));
+    bytes += next.reduce((total, row) => total + Buffer.byteLength(row), 0);
+    rows.push(...next); index++;
   }
   const target = file('large.jsonl', rows.join('')); const live = new LiveSession(target, 'claude'); await live.update();
   assert.ok(fs.statSync(target).size >= 10 * 1024 * 1024);
