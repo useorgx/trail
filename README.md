@@ -59,6 +59,10 @@ Successful publication reports `method.delivered` to OrgX as a producer report w
 
 After `trail connect`, `trail receipt-hook install` enables automatic Claude Code uploads through UserPromptSubmit, PostToolUse and Stop hooks. A private local worker retains the byte cursor and pending calls across hook invocations. `trail receipt-hook status` shows the integration, and `trail receipt-hook uninstall` removes it while retaining your other hooks and settings. Watch and hook uploads carry the same asks, summaries and excerpts as `trail sync --receipts`, with secret redaction and your configured personal-data masking.
 
+`trail watch` now tails Claude Code and Codex JSONL by byte offset and builds local goal receipts as work changes. Add `--receipts` to stream provisional checkpoints to OrgX; a final receipt follows 30 minutes without material activity, after outstanding tool calls finish. Receipt hashes use the AWR RFC 8785 content hash and cover every field except integrity, including evidence excerpts. Other transcript formats use their existing snapshot readers.
+
+After `trail connect`, `trail receipt-hook install` enables automatic Claude Code uploads through UserPromptSubmit, PostToolUse and Stop hooks. A private local worker retains the byte cursor and pending calls across hook invocations. `trail receipt-hook status` shows the integration, and `trail receipt-hook uninstall` removes it while retaining your other hooks and settings. Watch and hook uploads carry the same asks, summaries and excerpts as `trail sync --receipts`, with secret redaction and your configured personal-data masking.
+
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 
 ## How it works
