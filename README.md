@@ -22,11 +22,10 @@ npx @useorgx/trail
 | `trail search <q>` | search your receipts: ranked text plus exact filters such as `outcome:blocked type:fix repo:app pr:12 conf:<0.6 unmet:tests` |
 | `trail review` / `trail label` | the questions about your own work only you can settle (did it get done, was a criterion met); answers win over every guess |
 | `trail deepen` | get more reliable outcomes. With your approval, Jev (TypeSafe's decision model) reads each step and piece of work. Trail marks an outcome corroborated when both reads agree at high confidence. The reads share Jev's step tags and are not independent; observed checks determine verification. Pay with OrgX credits after `trail connect`, or use your own OpenRouter key with `--key-file`. Trail shows a quote first and sends nothing until you confirm. |
-
 | `trail walls` | find a wall: a failure your agents keep hitting in separate sessions. Each wall includes a fix (`--json` for agents). |
 | `trail copy <id>` | copy a selected fix as a prompt, rule, or command |
 | `trail adopt <id>` | write a selected fix into AGENTS.md / CLAUDE.md as a marked block (`trail unadopt <id>` removes it) |
-| `trail methods list\|publish\|remove` | list, publish or remove a current human-ratified OrgX method in a selected repository's AGENTS.md or CLAUDE.md; preview until `--yes` |
+| `trail methods` | list, publish or remove a current human-ratified OrgX method in a selected repository's AGENTS.md or CLAUDE.md; preview until `--yes` |
 | `trail guard install` | stop known repeat failures before they happen in don't-ask runs |
 | `trail card` | create a shareable summary image and post text |
 | `trail share <id>` | a public page for a fix, measured across everyone who adopted it |
@@ -34,11 +33,11 @@ npx @useorgx/trail
 | `trail bench` | test whether a model would repeat known failures, with and without your rules |
 | `trail mcp` | give your agents tools for reading trail data: `claude mcp add trail -- npx -y @useorgx/trail mcp` |
 | `trail open` · `trail watch` | open the browser view on localhost · follow the live session |
-
 | `trail connect` | sign in to OrgX through [`@useorgx/wizard`](https://www.npmjs.com/package/@useorgx/wizard); trail never handles your password or key |
 | `trail credits` | the people whose work trail is built on |
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
 | `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first. Also sends the judgments you made along the way (corrections, rejected tool calls, denials, rules you stated) so OrgX can turn them into precedents; they are kept locally in `~/.orgx/trail/precedent-candidates.jsonl` until then |
+
 ### Deliver a ratified OrgX method
 
 `trail methods list --workspace <workspace-id>` reads a current canonical method index using the OrgX sign-in from `trail connect` or `ORGX_API_KEY`. This command does not read session history. Copy the selected method's ID, version and digest into a preview, which fetches its full operational instructions and provenance:
@@ -54,10 +53,6 @@ Add `--yes` to write after reviewing the method. Choose `--to CLAUDE.md` for tha
 Each invocation checks live authority before writing. This is an explicit command, not a background revocation watcher. Files carry a reminder to recheck current authority before using a method. A local publisher lock and a final content check detect cooperating publishers and edits made before the final rename; they do not lock arbitrary editors or the server's authority transaction.
 
 Successful publication reports `method.delivered` to OrgX as a producer report with assurance rung 0. A failed report is shown as `unrecorded`; repeating the same publication retries it without rewriting the file. Delivery does not claim `method.used`, `behavior.changed` or `outcome.improved`. Those stages still require their existing gate, action and measured outcome witnesses. No instructions, local repository path or session transcripts are uploaded in the delivery report.
-
-`trail watch` now tails Claude Code and Codex JSONL by byte offset and builds local goal receipts as work changes. Add `--receipts` to stream provisional checkpoints to OrgX; a final receipt follows 30 minutes without material activity, after outstanding tool calls finish. Receipt hashes use the AWR RFC 8785 content hash and cover every field except integrity, including evidence excerpts. Other transcript formats use their existing snapshot readers.
-
-After `trail connect`, `trail receipt-hook install` enables automatic Claude Code uploads through UserPromptSubmit, PostToolUse and Stop hooks. A private local worker retains the byte cursor and pending calls across hook invocations. `trail receipt-hook status` shows the integration, and `trail receipt-hook uninstall` removes it while retaining your other hooks and settings. Watch and hook uploads carry the same asks, summaries and excerpts as `trail sync --receipts`, with secret redaction and your configured personal-data masking.
 
 `trail watch` now tails Claude Code and Codex JSONL by byte offset and builds local goal receipts as work changes. Add `--receipts` to stream provisional checkpoints to OrgX; a final receipt follows 30 minutes without material activity, after outstanding tool calls finish. Receipt hashes use the AWR RFC 8785 content hash and cover every field except integrity, including evidence excerpts. Other transcript formats use their existing snapshot readers.
 
