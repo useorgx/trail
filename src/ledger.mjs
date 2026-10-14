@@ -82,11 +82,12 @@ export function withGraph(r0, L) {
 export function reviewQueue(L, { limit = 50 } = {}) {
   const items = [];
   for (const r of L.receipts) {
-    const { r: resolved, e } = reviewed(r, L); const substantial = r.actions.length >= 5 || r.artifacts.length > 0;
+    const { r: resolved, e, inspection } = reviewed(r, L); const substantial = r.actions.length >= 5 || r.artifacts.length > 0;
     if (!substantial) continue;
     const o = L.tax.overrides[r.receipt_id];
     const oc = e.confidence?.outcome;
-    if (!(o?.by === 'human' && o.outcome) && typeof oc === 'number' && oc < 0.6 && ['succeeded', 'partially_succeeded', 'unknown'].includes(resolved.outcome.status)) items.push({ kind: 'outcome', receipt: r.receipt_id, question: 'Did this piece of work get done?', guess: resolved.outcome.status, confidence: oc, answers: ['succeeded', 'partially_succeeded', 'failed', 'blocked', 'abandoned'], value: (1 - oc) * (1 + r.artifacts.length / 5), at: r.timestamps.started_at, summary: r.intent.summary });
+    const conflict = inspection.conflicts.length > 0;
+    if (conflict || (!(o?.by === 'human' && o.outcome) && typeof oc === 'number' && oc < 0.6 && ['succeeded', 'partially_succeeded', 'unknown'].includes(resolved.outcome.status))) items.push({ kind: 'outcome', receipt: r.receipt_id, question: conflict ? 'Resolve the conflicting result and criterion states.' : 'Did this piece of work get done?', guess: resolved.outcome.status, confidence: conflict ? null : oc, answers: ['succeeded', 'partially_succeeded', 'failed', 'blocked', 'abandoned'], value: conflict ? 1.5 : (1 - oc) * (1 + r.artifacts.length / 5), at: r.timestamps.started_at, summary: r.intent.summary });
     for (const c of (e.criteria || []).filter((c) => c.status === 'unknown')) items.push({ kind: 'criterion', receipt: r.receipt_id, criterion: c.id, question: `Was this met: “${c.text}”?`, guess: 'unknown', confidence: c.confidence, answers: ['met', 'unmet'], value: 0.6, at: r.timestamps.started_at, summary: r.intent.summary });
   }
   // Recent work first within equal value: it is what you still remember.

@@ -20,6 +20,7 @@ export function projectReviewedWork(receipt, tax = { overrides: {} }) {
     e.confidence = { ...e.confidence, outcome: null };
     statusProvenance('/outcome/status', basis, o.by === 'human');
     e.outcome_kind = o.outcome;
+    r.outcome.metadata.kind = o.outcome;
   }
   e.criteria = (e.criteria || []).map((c) => {
     const status = o?.criteria?.[c.id]; if (!status) return c;
@@ -44,6 +45,7 @@ export function projectReviewedWork(receipt, tax = { overrides: {} }) {
   if (conflicts.length && !o?.outcome) {
     r.outcome.status = 'partially_succeeded'; r.outcome.metadata = { ...r.outcome.metadata }; delete r.outcome.metadata.confidence;
     r.outcome.metadata.provenance = 'inferred_conflict'; e.confidence = { ...e.confidence, outcome: null };
+    r.outcome.metadata.kind = 'inferred_conflict'; e.outcome_kind = 'inferred_conflict';
     statusProvenance('/outcome/status', 'local_outcome_criteria_conflict');
   }
   e.read_projection = { outcome_basis: o?.outcome ? basis : conflicts.length ? 'inferred_conflict' : 'inferred', conflicts };

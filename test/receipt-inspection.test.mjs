@@ -54,6 +54,8 @@ test('criterion-only conflicts retain equal outcome, basis and conflicts on ever
   for(const view of [row,d,s,w]){assert.equal(view.outcome,'partially_succeeded');assert.equal(view.outcome_basis,'inferred_conflict');assert.deepEqual(view.conflicts,d.inspection.conflicts);}
   assert.equal(wire.extensions[EXT].read_projection.outcome_basis,'inferred_conflict');assert.deepEqual(wire.extensions[EXT].read_projection.conflicts,d.inspection.conflicts);
   assert.equal(wire.outcome.status,'partially_succeeded');assert.equal(d.criteria[0].confidence,undefined);
+  assert.equal(d.outcome_kind,'inferred_conflict');assert.equal(search('outcome:verified_change unmet:tests',{L}).total,0);
+  assert.ok(reviewQueue(L).some((q)=>q.receipt===r.receipt_id && q.kind==='outcome' && q.confidence===null));
   assert.equal(d.outcome_detail.criteria_results[0].confidence,undefined);assert.equal(d.inspection.original.criteria[0].confidence,0.9);
   assert.equal(d.provenance.find((p)=>p.path==='/outcome/criteria_results/0/status').basis,'declared');
   assert.equal(d.inspection.original.provenance.find((p)=>p.path==='/outcome/status').basis,'inferred');
