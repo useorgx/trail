@@ -32,7 +32,7 @@ npx -y @useorgx/trail walls --json
 npx -y @useorgx/trail open
 ```
 
-Open the tokenized localhost URL printed by `open`. Expand a wall to inspect its sample and suggested fix; the project filters help narrow the timeline. **Success:** a wall identifies the failure, how many separate sessions hit it, and a rule you can review before adopting. If there are no walls, that is a valid result; try `--demo` to explore a populated example. Press Ctrl-C to stop the browser server.
+Open the tokenized localhost URL printed by `open`. Expand a wall to inspect its sample and suggested fix; search by project name to narrow the timeline. **Success:** a wall identifies the failure, how many separate sessions hit it, and a rule you can review before adopting. If there are no walls, that is a valid result; try `--demo` to explore a populated example. Press Ctrl-C to stop the browser server.
 
 ## Docs and troubleshooting
 
