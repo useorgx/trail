@@ -8,7 +8,7 @@ export function semanticManifest({workspace_id,privacy_scope,privacy_version,ver
   if(![workspace_id,privacy_scope,privacy_version].every(text)||!['read','draft_proposal'].includes(mode)||!Array.isArray(sources)||sources.length>50||!Array.isArray(spans)||spans.length>100)fail('invalid_manifest');
   const required=['provider','model','prompt','schema','extractor','ontology'];if(!versions||required.some((k)=>!text(versions[k])))fail('unpinned_versions');
   if(!Array.isArray(capabilities)||capabilities.some((c)=>!['choice_classification','typed_slots'].includes(c)))fail('unsupported_capability_descriptor');
-  const seen=new Set(),input=sources.map((s)=>{if(s.workspace_id!==workspace_id||!text(s.source_revision)||seen.has(s.source_event_id))fail('source_scope_or_revision');seen.add(s.source_event_id);const r=representation(s);return {source_event_id:s.source_event_id,source_revision:s.source_revision,representation_hash:r.hash,representation_version:r.version,role:s.role??null,actor_id:s.actor_id??null,source_id:s.source_id??null};});
+  const seen=new Set(),input=sources.map((s)=>{if(s.workspace_id!==workspace_id||!text(s.source_revision)||seen.has(s.source_event_id))fail('source_scope_or_revision');if(s.trusted_as_instruction!=null&&typeof s.trusted_as_instruction!=='boolean')fail('invalid_source_trust_context');seen.add(s.source_event_id);const r=representation(s);return {source_event_id:s.source_event_id,source_revision:s.source_revision,representation_hash:r.hash,representation_version:r.version,role:s.role??null,actor_id:s.actor_id??null,source_id:s.source_id??null,trusted_as_instruction:s.trusted_as_instruction??null};});
   for(const ref of spans){const s=sources.find((s)=>s.source_event_id===ref.source_event_id);if(!s)fail('source_unavailable');validateSpan(ref,s);}
   const value={schema_version:'org.orgx.understanding/v1',workspace_id,privacy_scope,privacy_version,versions:Object.fromEntries(required.map((k)=>[k,versions[k]])),input,spans:structuredClone(spans),mode,capabilities:[...capabilities]};
   return freeze({...value,cache_key:digest(JSON.stringify(value))});
@@ -23,7 +23,7 @@ export function validateModelProposal(proposal,sources) {
   return validateProposal(proposal,sources);
 }
 export function inputStillCurrent(manifest,sources) {
-  return sources.length===manifest.input.length&&manifest.input.every((old)=>{const s=sources.find((s)=>s.source_event_id===old.source_event_id);return !!s&&s.workspace_id===manifest.workspace_id&&s.source_revision===old.source_revision&&representation(s).hash===old.representation_hash&&(s.role??null)===old.role&&(s.actor_id??null)===old.actor_id&&(s.source_id??null)===old.source_id;});
+  return sources.length===manifest.input.length&&manifest.input.every((old)=>{const s=sources.find((s)=>s.source_event_id===old.source_event_id);return !!s&&s.workspace_id===manifest.workspace_id&&s.source_revision===old.source_revision&&representation(s).hash===old.representation_hash&&(s.role??null)===old.role&&(s.actor_id??null)===old.actor_id&&(s.source_id??null)===old.source_id&&(s.trusted_as_instruction??null)===old.trusted_as_instruction;});
 }
 
 // Budget units are synthetic fixture units, not a provider price or actual billing record.

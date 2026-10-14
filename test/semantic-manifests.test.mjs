@@ -17,6 +17,13 @@ test('missing, revised or re-redacted sources invalidate cached proposals and ab
  assert.equal(inputStillCurrent(m,[e,{...e,source_event_id:'e2'}]),false);assert.equal(inputStillCurrent(m,[{...e,role:'attachment'}]),false);
  assert.throws(()=>make({spans:[{...cite(e),quote_hash:'wrong'}]}),{code:'quote_mismatch'});assert.equal(abstention('rationale','insufficient_evidence').basis,'unknown');
 });
+test('trust withdrawal invalidates same-text/revision candidates and cache identity',()=>{
+ const trusted={...e,trusted_as_instruction:true},withdrawn={...trusted,trusted_as_instruction:false},manifest=make({sources:[trusted],spans:[cite(trusted)],mode:'draft_proposal',capabilities:['choice_classification']});
+ assert.ok(explicitChoiceCandidate(trusted,{entity_id:'decision:a',workspace_id:e.workspace_id}));assert.equal(explicitChoiceCandidate(withdrawn,{entity_id:'decision:a',workspace_id:e.workspace_id}),null);
+ assert.equal(inputStillCurrent(manifest,[withdrawn]),false);assert.notEqual(make({sources:[withdrawn],spans:[cite(withdrawn)],mode:'draft_proposal',capabilities:['choice_classification']}).cache_key,manifest.cache_key);
+ assert.equal(planFixtureCall(manifest,budget(),request(),'choice_classification',[withdrawn]).planned_calls,0);
+ assert.throws(()=>make({sources:[{...e,trusted_as_instruction:'false'}]}),{code:'invalid_source_trust_context'});
+});
 test('default reads and unsupported capabilities plan zero calls; source instructions cannot alter the manifest',()=>{
  const state=budget();assert.deepEqual(planFixtureCall(make(),state,request(),'typed_slots',[e]).state,state);
  const m=make({mode:'draft_proposal',capabilities:['choice_classification']});assert.equal(planFixtureCall(m,state,request(),'typed_slots',[e]).planned_calls,0);
