@@ -1,20 +1,89 @@
 # orgx trail
 
 See what your coding agents actually did, stop them repeating the same failures, and prove the fix worked.
-Trail reads your Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Factory Droid history. It groups each sequence of work, finds failures repeated across separate sessions, and writes the fix where agents will read it.
+
+For developers and teams using coding agents, Trail turns local session history into threads of work, repeated failures ("walls"), and reviewable fixes. It reads Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, OpenCode and Factory Droid history. You choose which fixes to write into agent instructions.
+
+## UI preview
+
+![Trail browser ledger showing five synthetic project timelines, outcome and verification counts, and repeated failures with suggested fixes](docs/images/ledger-demo.png)
+
+Captured from the current browser ledger with the shipped demo's 48 made-up sessions; these are example results ([capture details](docs/images/preview-provenance.md)). [Try the live terminal demo](#quickstart), or [open the local browser UI](#example-find-a-repeated-failure). Trail serves the browser UI on your machine; there is no hosted Trail explorer. GitHub displays this screenshot, not a running app.
+
+## Quickstart
+
+Requires **Node.js 20+**. Try it without an account, API key, or existing session history:
 
 ```bash
-npx @useorgx/trail
+npx -y @useorgx/trail --demo
 ```
 
-- **Local.** Reads each client's own history on your machine, read-only: Claude Code, Codex (including its structured command, MCP and file-change records), Cursor (editor and agent), GitHub Copilot in VS Code, Gemini CLI, OpenCode and Factory Droid. Windsurf keeps its history encrypted, so it isn't read. Uploads require `trail sync`, `trail watch --receipts`, or opting in to automatic receipt hooks.
-- **Fast.** ~3,300 sessions (38 GB) in about 40 seconds; after that, only new work is read.
-- **Small.** The shared Agent Work Receipt package provides schema and canonicalization support.
+Use `1`–`5` to switch views and `q` to exit. The demo reads no local session history and removes its temporary data when you exit.
+
+To analyze your own history, run `npx -y @useorgx/trail`. It reads the supported clients' local history and opens the terminal explorer; no model is needed. Uploads and paid analysis are separate, explicit actions.
+
+## Example: find a repeated failure
+
+In a repository with local coding-agent history:
+
+```bash
+npx -y @useorgx/trail scan
+npx -y @useorgx/trail walls --json
+npx -y @useorgx/trail open
+```
+
+Open the tokenized localhost URL printed by `open`. Expand a wall to inspect its sample and suggested fix; the project filters help narrow the timeline. **Success:** a wall identifies the failure, how many separate sessions hit it, and a rule you can review before adopting. If there are no walls, that is a valid result; try `--demo` to explore a populated example. Press Ctrl-C to stop the browser server.
+
+## Docs and troubleshooting
+
+- `npx -y @useorgx/trail --help` lists commands and flags; the [command table](#what-you-can-do) explains the workflows.
+- Empty view: run `scan` first and check that a supported client's local history exists. The demo works on a clean machine; Windsurf history is encrypted and is not read.
+- Browser access: use the full URL printed by `open`, including its per-launch token. A bare localhost URL is rejected. Use `open --port 4748` if the default port is occupied.
+- Data location and upload boundaries: see [Privacy](#privacy), [Data](#data), and `trail privacy`. `TRAIL_HOME` selects a separate local store; it does not change where client histories are discovered during a scan.
+- Package verification and attribution: [Verify this package](#verify-this-package), [LICENSE](LICENSE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## For agents
+
+Connect the shipped **read-only stdio MCP server** after the person has scanned the history they want you to use. For Claude Code:
+
+```bash
+claude mcp add trail -- npx -y @useorgx/trail mcp
+```
+
+Other MCP clients can use this command configuration:
+
+```json
+{
+  "mcpServers": {
+    "trail": {
+      "command": "npx",
+      "args": ["-y", "@useorgx/trail", "mcp"]
+    }
+  }
+}
+```
+
+Local MCP needs no OrgX auth or model key. It reads the local Trail store under the process user's permissions; it does not scan client histories for you. Set `TRAIL_HOME` in your client's server environment if the person chose a separate store. Connecting an agent makes that store's results available to the agent and its model provider.
+
+Discover the available schemas with `tools/list`; the shipped tools are `trail_summary`, `trail_walls`, `trail_check`, `trail_threads`, `trail_search`, `trail_receipt`, `trail_workstream`, and `trail_review`. Scope queries to a project and return the evidence behind a result:
+
+```text
+Before changing checkout-web, use trail_walls with project="checkout-web".
+Search past work with trail_search query="repo:checkout-web outcome:blocked".
+Open a returned ID with trail_receipt and cite its checks and unmet criteria.
+Before a shell call, use trail_check with the actual tool and command.
+```
+
+Verify connection with `trail_summary`, then inspect a returned receipt rather than treating an inferred outcome as proof. An empty summary usually means this store has not been scanned. MCP does not adopt fixes, upload history, buy credits, or approve paid analysis; those are separate person-controlled CLI flows. After new local data is added, reconnect MCP to refresh its cached summary and walls.
+
+## Costs and payment
+
+Local scanning, the demo, browser UI, and MCP require no account or paid model. The software is [Apache-2.0 licensed](LICENSE). Optional `trail deepen` shows a quote before confirmation: use OrgX credits after `trail connect`, or your own OpenRouter key (`--key-file`); model charges are separate. See [OrgX plans](https://useorgx.com/pricing) and [the shipped Jev model's pricing](https://openrouter.ai/typesafe/jev-1.13). Purchases happen through those services' billing flows, not Trail MCP.
 
 ## What you can do
 
 | | |
-|---|---|
+| --- | --- |
 | `trail` | read new work, then open the explorer |
 | `trail goals` | see each piece of work, its detours, how it ended, and where the agent changed course (`--json`) |
 | `trail receipts` | one [Agent Work Receipt](https://github.com/useorgx/agent-work-receipt) (v0.2) per piece of work: what was asked, whether each acceptance criterion was met and on what evidence, what was delivered, what checked it (`<id>`, `--json`, `--export file`). Each receipt also carries the review layer (`extensions['org.orgx.review/v1']`): every criterion quoted from the person's words with the message it came from, four kinds of proof per criterion (reviewed, tested, shown, seen live), the episodes of the work with stable ids tied to commits, and which layers of the record exist. OrgX renders it as the Work Receipt Review |
@@ -89,7 +158,7 @@ Each release is built from a tagged commit by [`.github/workflows/publish.yml`](
 Trail is built on other people's ideas. None of them endorse it; this is what we took from each. `trail credits` shows the longer version.
 
 | Work | What trail took from it |
-|---|---|
+| --- | --- |
 | [Clio: privacy-preserving insights into real-world AI use](https://www.anthropic.com/research/clio) · Alex Tamkin and the Clio team at Anthropic, 2024 | A fix’s public numbers appear only once at least 5 separate people have adopted it, and uploads carry counts, not words (thread titles only if you opt in with --with-titles). |
 | [Error analysis for AI systems (open coding → axial coding → count → judge)](https://hamel.dev/blog/posts/evals-faq/why-is-error-analysis-so-important-in-llm-evals-and-how-is-it-performed.html) · Hamel Husain and Shreya Shankar, 2025 | The walls are failure types counted across real sessions, and trail’s classifier is checked against human labels in a labeling lab. (We wrote our codebook before our notes, which they warn against; the next labeling pass starts from notes.) |
 | [Sniffly: a dashboard over your local Claude Code logs](https://github.com/chiphuyen/sniffly) · Chip Huyen, 2025 | Lead with one surprising number about your own agents, found locally. |
@@ -107,8 +176,10 @@ Trail is built on other people's ideas. None of them endorse it; this is what we
 
 `trail privacy` shows what trail keeps, where, who can read it, and what each command sends, counted from the files.
 Secrets are removed before anything is stored or sent, using gitleaks' 221 provider rules (plus OrgX and OpenRouter keys);
-trail's folder is readable by you only. Nothing leaves the machine unless you run `trail sync` (counts and move strings;
-`--with-titles` adds titles) or `trail deepen` (after a quote you confirm). For names, emails, phones and addresses too,
+trail's folder is readable by you only. Uploads are explicit: `trail sync` sends counts and move strings
+(`--with-titles` adds titles); `sync --receipts`, `watch --receipts`, and opt-in receipt hooks can send asks, summaries,
+and evidence excerpts. `trail deepen` sends analysis text after a quote you confirm. Review the command table before
+enabling these flows. For names, emails, phones and addresses too,
 `trail privacy --pii on` masks outgoing text locally with [OpenAI Privacy Filter](https://github.com/openai/privacy-filter).
 
 Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDays`); trail keeps its own outlines after that.
