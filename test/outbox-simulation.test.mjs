@@ -39,8 +39,12 @@ test('stale/reordered producer revisions conflict rather than replacing newer st
 });
 test('source absence is not deletion and synthetic tombstones block old replicas/acks',()=>{
   const a=enqueue(),sent=simulatedAdmission(a.state,a.operation_key),t=applySyntheticTombstone(sent.state,{workspace_id:'workspace:A',receipt_id:receipt().receipt_id,server_revision:2});
-  assert.notEqual(acknowledgeSimulation(t,sent.ack).items[a.operation_key].status,'acknowledged');assert.equal(simulatedAdmission(t,a.operation_key).refusal,'tombstone_predecessor');
+  assert.notEqual(acknowledgeSimulation(t,sent.ack).items[a.operation_key].status,'acknowledged');assert.equal(simulatedAdmission(t,a.operation_key).refusal,'tombstone_requires_authorized_restore');
   assert.equal(JSON.parse(JSON.stringify(sent.state)).items[a.operation_key].status,'in_flight','omitting a source scan performs no deletion transition');
+});
+test('a tombstone at the current revision blocks equal/newer predecessor admission without restore authority',()=>{
+ const a=enqueue(),one=simulatedAdmission(a.state,a.operation_key),t=applySyntheticTombstone(one.state,{workspace_id:'workspace:A',receipt_id:receipt().receipt_id,server_revision:1});
+ for(const expected_server_revision of [1,2]){const next=enqueue(t,{producer_revision:2,expected_server_revision,receipt:receipt('Later evidence')}),blocked=simulatedAdmission(next.state,next.operation_key);assert.equal(blocked.refusal,'tombstone_requires_authorized_restore');assert.equal(blocked.state.effects,1);assert.equal(blocked.state.server[next.state.items[next.operation_key].entity].server_revision,1);}
 });
 test('Retry-After seconds/date, restart, attempt caps and refusals remain bounded',()=>{
   const a=enqueue(),sent=simulatedAdmission(a.state,a.operation_key,{lose_response:true}),now=Date.parse('2026-10-14T10:00:00Z');

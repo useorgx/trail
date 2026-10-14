@@ -27,7 +27,9 @@ export function simulatedAdmission(state,key,{lose_response=false,now=null}={}) 
   if(item.attempts>=3)fail('attempt_cap');item.attempts++;
   if(receiptFingerprint(JSON.parse(item.wire_bytes))!==item.wire_hash||hash(item.wire_bytes)!==item.wire_bytes_hash||key!==operationKey(item)||item.receipt_id!==JSON.parse(item.wire_bytes).receipt_id||item.entity!==scopeKey(item.workspace_id,item.receipt_id))fail('immutable_payload_changed');
   const current=s.server[item.entity],tombstone=s.tombstones[item.entity];
-  if(tombstone&&item.expected_server_revision<tombstone.server_revision){item.status='conflict';return {state:s,refusal:'tombstone_predecessor'};}
+  // No restoration command/authority exists in this fixture. A tombstone blocks all new
+  // admission, including an equal or newer predecessor, until a separately reviewed restore contract exists.
+  if(tombstone){item.status='conflict';return {state:s,refusal:'tombstone_requires_authorized_restore'};}
   let ack=current?.operations?.[key];
   if(!ack){
     const producer=hash(item.producer_id);
