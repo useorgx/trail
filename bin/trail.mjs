@@ -57,6 +57,7 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail deepen       get surer outcomes: Jev reads each step and piece of work · opt-in · quote shown first
                      pay with OrgX credits after trail connect, or use your own key with --key-file
   trail receipts     one Agent Work Receipt per piece of work: asked, done, checked, delivered   (<id> for one · --json)
+                     <id> --view summary|evidence|source [--criterion c1] [--evidence <id>] · local read only
   trail workstreams  pieces of work joined across sessions by shared PRs, branches, files, continuations   (<id> · --all)
   trail search <q>   search the ledger: text plus filters like outcome:blocked type:fix repo:x pr:12 conf:<0.6 unmet:tests
   trail review       questions about your own receipts only you can settle; answer with trail label
@@ -142,8 +143,14 @@ else if (['receipts', 'workstreams', 'search', 'review', 'label', 'taxonomy'].in
   const OUT = { succeeded: C.teal, partially_succeeded: C.amber, blocked: C.coral, failed: C.coral, unknown: C.dim };
   const pct = (x) => (x == null ? '  —' : String(Math.round(x * 100)).padStart(3) + '%');
   const line = (x) => `  ${String(x.at).slice(5, 10)} ${String(x.repo || '—').slice(0, 12).padEnd(12)} ${OUT[x.outcome] || ''}${x.outcome.replace('_', ' ').slice(0, 13).padEnd(13)}${C.r} ${String(x.work_type || '').padEnd(11)} ${C.dim}${pct(x.confidence)}${C.r} ${String(x.summary).replace(/\s+/g, ' ').slice(0, 58).padEnd(58)} ${C.dim}${x.id.split(':').slice(-2).join(':').slice(-22)}${x.criteria.unmet ? ` · ${x.criteria.unmet} unmet` : ''}${x.workstream ? ` · ${x.workstream}` : ''}${C.r}`;
-  const pos = argv.filter((a, i) => !a.startsWith('--') && !['--limit', '--name', '--into', '--since', '--client', '--export'].includes(argv[i - 1])); const sub = pos[1];
-  if (cmd === 'receipts' && sub && sub !== 'list') { const d = receiptDetail(sub); if (!d) { console.error(`No receipt matches "${sub}".`); process.exitCode = 1; } else console.log(JSON.stringify(d, null, 1)); }
+  const pos = argv.filter((a, i) => !a.startsWith('--') && !['--limit', '--name', '--into', '--since', '--client', '--export', '--view', '--criterion', '--evidence'].includes(argv[i - 1])); const sub = pos[1];
+  if (cmd === 'receipts' && sub && sub !== 'list') {
+    try {
+      const d = receiptDetail(sub); if (!d) throw new Error(`No receipt matches "${sub}".`);
+      if (val('view')) { const { inspectionView, formatInspection } = await import('../src/inspection.mjs'); const v = inspectionView(d, { view: val('view'), criterion: val('criterion'), evidence: val('evidence') }); console.log(json ? JSON.stringify(v, null, 1) : formatInspection(v)); }
+      else console.log(JSON.stringify(d, null, 1));
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+  }
   else if (cmd === 'receipts' && val('export')) { const { withGraph } = await import('../src/ledger.mjs'); const L = ledger(); const out = L.receipts.slice().sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, +(val('limit') || 1000)).map((r) => withGraph(r, L));
     (await import('node:fs')).writeFileSync(val('export'), JSON.stringify(out), { mode: 0o600 }); console.log(`Wrote ${out.length} receipts (as trail sync --receipts would send them, before personal-data masking) to ${val('export')}`); }
   else if (cmd === 'receipts') { const L = ledger(); const rows = L.receipts.slice().sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at))).slice(0, lim).map((r) => rowOf(r, L));

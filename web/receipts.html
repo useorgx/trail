@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trail · Work receipts</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0e14;--ink:#f1f4f8;--muted:#bac3d0;--line:#536073;--accent:#bfff00}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,sans-serif}header,main{max-width:1100px;margin:auto;padding:20px}h1,h2,h3{line-height:1.3}h1{font-size:26px}h2{font-size:22px}h3{font-size:18px}a{color:var(--accent)}a,button{min-height:44px;display:inline-flex;align-items:center}button,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:5px;padding:10px}button{cursor:pointer}input{width:100%;min-height:44px}a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}form{display:flex;gap:8px}label{flex:1;min-width:0}.layout{display:grid;grid-template-columns:minmax(260px,1fr) minmax(0,2fr);gap:28px}.row{display:block;border-bottom:1px solid var(--line);padding:16px 0;text-decoration:none;color:inherit;overflow-wrap:anywhere}.row[aria-current=true]{border-left:3px solid var(--accent);padding-left:12px}.muted{color:var(--muted)}.metadata,pre{font:13px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}article,section{min-width:0;overflow-wrap:anywhere}section{border-top:1px solid var(--line);padding:12px 0}details{margin:10px 0}summary{cursor:pointer;padding:8px 0;min-height:44px}blockquote{margin:8px 0;padding:12px;border-left:2px solid var(--line);white-space:pre-wrap}ul{padding-left:20px}#message{min-height:24px;color:var(--muted)}@media(max-width:700px){body[data-selected=true] #list{display:none}body[data-selected=false] #detail{display:none}.layout{display:block}header,main{padding:16px}.row{padding:12px 0}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+<header><a id="legacy" href="/">Legacy thread history</a><h1>Work receipts</h1><p class="muted">What was asked, what was recorded, and where evidence is missing.</p>
+<form id="search"><label>Search and filters<input id="query" type="search" placeholder="e.g. outcome:blocked unmet:tests"></label><button>Search</button><button type="button" id="clear">Clear</button></form><p id="message" role="status" aria-live="polite"></p></header>
+<main class="layout"><nav id="list" aria-label="Work receipts"></nav><article id="detail" aria-label="Selected receipt"><p>Select a receipt to inspect its evidence.</p></article></main>
+<script type="module">
+const token = new URL(location.href).searchParams.get('k') || '';
+const el = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
+const list = document.querySelector('#list'), detail = document.querySelector('#detail'), message = document.querySelector('#message'), query = document.querySelector('#query');
+document.querySelector('#legacy').href = '/?k=' + encodeURIComponent(token);
+const local = (path, params = {}) => { const u = new URL(path, location.origin); u.searchParams.set('k', token); for (const [k,v] of Object.entries(params)) u.searchParams.set(k,v); return u; };
+async function read(path, params, signal) { const r = await fetch(local(path, params), { signal }); if (!r.ok) throw new Error(r.status === 409 ? 'This short ID matches several records. Use a full ID.' : 'Read failed. Last loaded data is retained.'); return r.json(); }
+let controller;
+function section(title) { const s = el('section'); s.append(el('h3',title)); detail.append(s); return s; }
+function evidenceRow(e) {
+  const d = el('details'); d.id = 'evidence-' + e.id; d.append(el('summary', `${e.kind} · ${e.summary}`));
+  d.append(el('p',e.observed_at || 'Event time unknown','muted'),el('blockquote',e.excerpt || 'Excerpt not included in this record.'));
+  d.append(el('p','Stored evidence excerpt. The original source is not loaded here; this event does not establish deployment or human acceptance.','muted'));
+  d.append(el('p',e.ref ? `${e.ref.system} / ${e.ref.type} / ${e.ref.id}` : 'Source locator not included','metadata')); return d;
+}
+function render(r) {
+  detail.replaceChildren(el('h2',r.summary),el('p',`${r.repo || 'Repository unresolved'} · ${r.client} · ${r.at || 'Time unknown'}`,'muted'));
+  const back = el('a','Back to receipts'); const backUrl = new URL(location.href); backUrl.searchParams.delete('id'); back.href=backUrl.href; back.onclick=(e)=>{e.preventDefault();history.pushState({},'',back.href);load();}; detail.prepend(back);
+  detail.append(el('p',`Result: ${r.outcome.replaceAll('_',' ')} · ${r.outcome_basis.replaceAll('_',' ')}`),
+    el('p',`Acceptance: ${r.acceptance.status} (producer reported; shared human judgment unavailable).`,'muted'));
+  if(r.inspection.conflicts.length) detail.append(el('p','Conflicting result and criterion states need review. Original claims are preserved.'));
+  if(r.acceptance.origin === 'legacy_outcome_mapping') detail.append(el('p','Legacy acceptance came from an outcome correction, not a separate acceptance action.','muted'));
+  const criteria = section('Criteria'); if (!r.criteria.length) criteria.append(el('p','No criteria extracted for this work.'));
+  for (const c of r.criteria) { const d = el('details'); d.id = 'criterion-' + c.id; d.append(el('summary',`${c.status.toUpperCase()} · ${c.text}`));
+    d.append(el('p',c.by === 'human' ? 'Locally corrected. A correction does not create a passing test.' : 'Inferred by the producer.'));
+    const proof = r.evidence.filter((e) => c.evidence_ids.includes(e.id)); for (const e of proof) d.append(evidenceRow(e));
+    if (!proof.length) d.append(el('p','No supporting evidence attached.','muted')); criteria.append(d); }
+  const artifacts = section('Artifacts'); for (const a of r.artifacts) artifacts.append(el('p',`${a.name} · producer reports ${a.role}; delivery not established here · ${a.ref?.id || 'Identity unavailable'}`));
+  const proof = section('Evidence'); for (const e of r.evidence) proof.append(evidenceRow(e));
+  const work = section('Work history'); for(const a of r.actions || []) work.append(el('p',`${a.status} · ${a.summary} · ${a.started_at?.startsWith('1970-01-01') ? 'Time unavailable (legacy fallback)' : a.started_at || 'Time unknown'}`));
+  const changes = section('Changes of course'); changes.append(el('p',r.changes_of_course.length ? r.changes_of_course.map((c) => `${c.trigger} · ${c.evidence}`).join('\n') : 'No change-of-course records extracted.'));
+  changes.append(el('p','Decision records are not available for this work.','muted'));
+  const related = section('Related work'); for(const l of r.links) { const a = el('a',`${l.relationship.replaceAll('_',' ')} · ${l.other_summary || l.other} (derived link)`); const u=new URL(location.href);u.searchParams.set('id',l.other);a.href=u.href;a.onclick=(e)=>{e.preventDefault();globalThis.history.pushState({},'',a.href);load();};related.append(a,el('p',(l.evidence || []).join(' · '),'muted')); } if(!r.links.length) related.append(el('p','No related work extracted.'));
+  const coverage = section('Coverage and local review'); coverage.append(el('p',`${r.coverage.status} for ${r.coverage.scope}; original history coverage ${r.coverage.source_status || 'unknown'}.`));
+  for (const [name,s] of Object.entries(r.coverage.sections || {})) coverage.append(el('p',`${name.replaceAll('_',' ')}: ${s.returned} of ${s.total ?? 'unknown'}${s.truncated ? ' · omitted by receipt limit' : ''}`));
+  coverage.append(el('p','Shared sync acknowledgment unavailable in this read.','muted'));
+  const metadata = el('details'); metadata.append(el('summary','IDs, correction history and provenance'),el('pre',JSON.stringify({id:r.id,review_revision:r.review_revision,corrections:r.inspection.corrections,provenance:r.provenance},null,2))); coverage.append(metadata);
+}
+async function load() {
+  controller?.abort(); controller = new AbortController(); const signal = controller.signal; const state = new URL(location.href);
+  document.body.dataset.selected=String(state.searchParams.has('id'));
+  query.value = state.searchParams.get('q') || ''; message.textContent = 'Loading local receipts…';
+  try {
+    const data = await read('/api/v1/receipts',{q:query.value,limit:20,offset:state.searchParams.get('offset') || 0},signal); if (signal.aborted) return;
+    list.replaceChildren(); message.textContent = `${data.coverage.returned} of ${data.coverage.total} matches · as of ${data.as_of}`;
+    if (!data.results.length) list.append(el('p',query.value ? 'No matches for these filters. Clear to see recent work.' : 'No work recorded yet. Use trail scan locally to record supported history.'));
+    for (const r of data.results) { const a = el('a',null,'row'); const u = new URL(location.href); u.searchParams.set('id',r.id); a.href=u.href; a.setAttribute('aria-current',String(state.searchParams.get('id')===r.id));
+      a.append(el('strong',r.summary),el('div',`${r.outcome.replaceAll('_',' ')} · ${r.criteria.unknown ? r.criteria.unknown + ' criteria without evidence' : 'Open evidence for scope'}`,'muted'),el('div',`${r.repo || 'Repository unresolved'} · ${r.client} · ${r.at || 'Time unknown'}`,'muted'));
+      a.onclick=(e)=>{e.preventDefault();history.pushState({},'',a.href);load();}; list.append(a); }
+    if (data.coverage.next_offset != null) { const b=el('button','Next receipts'); b.onclick=()=>{const u=new URL(location.href);u.searchParams.set('offset',data.coverage.next_offset);history.pushState({},'',u);load();};list.append(b); }
+    if (state.searchParams.has('id')) { const r = await read('/api/v1/receipt',{id:state.searchParams.get('id')},signal); if (!signal.aborted) render(r); }
+  } catch (e) { if (e.name !== 'AbortError') message.textContent = e.message + ' Use Search to retry.'; }
+}
+document.querySelector('#search').onsubmit=(e)=>{e.preventDefault();const u=new URL(location.href);u.searchParams.set('q',query.value);u.searchParams.delete('offset');history.pushState({},'',u);load();};
+document.querySelector('#clear').onclick=()=>{const u=new URL(location.href);u.searchParams.delete('q');u.searchParams.delete('offset');history.pushState({},'',u);load();};
+addEventListener('popstate',load); load();
+</script></html>

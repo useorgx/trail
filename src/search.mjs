@@ -7,7 +7,7 @@
 // conf (<n or >n), unmet (criterion kind, or `any`), status (workstream rollup). Unknown key:value pairs are text.
 import { EXT } from './receipt.mjs';
 import { tokens } from './workstreams.mjs';
-import { ledger, rowOf } from './ledger.mjs';
+import { ledger, rowOf, projectReviewedWork } from './ledger.mjs';
 
 const FIELDS = { summary: 3, objective: 1.5, outcome: 1.2, criteria: 1, artifacts: 1.2, workstream: 1, actions: 0.4 };
 const KEYS = new Set(['outcome', 'verification', 'verified', 'type', 'area', 'repo', 'client', 'ws', 'workstream', 'pr', 'file', 'since', 'until', 'conf', 'unmet', 'status']);
@@ -23,7 +23,8 @@ export function parseQuery(q) {
 
 let index = null;
 function buildIndex(L) {
-  const docs = L.receipts.map((r) => {
+  const docs = L.receipts.map((r0) => {
+    const { r } = projectReviewedWork(r0, L.tax);
     const e = r.extensions?.[EXT] || {}; const ws = L.built.byReceipt[r.receipt_id]; const w = ws && L.built.workstreams.find((x) => x.id === ws);
     const f = {
       summary: tokens(r.intent.summary), objective: tokens(r.intent.objective), outcome: tokens(r.outcome.summary),
@@ -77,19 +78,20 @@ export function search(q, { limit = 20, L = ledger() } = {}) {
     out.push({ ...row, score: +score.toFixed(3), matched: hit });
   }
   out.sort((a, b) => (terms.length ? b.score - a.score : 0) || String(b.at).localeCompare(String(a.at)));
-  return { query: { text, filters }, total: out.length, results: out.slice(0, limit) };
+  return { query: { text, filters }, total: out.length, results: out.slice(0, limit), coverage: { scope: 'local lexical search', total: out.length, returned: out.slice(0, limit).length, limit, truncated: out.length > limit } };
 }
 
 /** One receipt with the context an agent needs to judge it: its workstream, its neighbours, and what is uncertain. */
 export function receiptDetail(id, L = ledger()) {
-  const r = L.byId.get(id) || L.receipts.find((x) => x.receipt_id.endsWith(id)); if (!r) return null;
+  const r0 = resolveId(id, L.receipts, (x) => x.receipt_id); if (!r0) return null;
+  const { r, inspection } = projectReviewedWork(r0, L.tax);
   const row = rowOf(r, L); const e = r.extensions?.[EXT] || {}; const w = row.workstream && L.built.workstreams.find((x) => x.id === row.workstream);
   const links = L.built.links.filter((l) => l.from === r.receipt_id || l.to === r.receipt_id).map((l) => ({ ...l, other: l.from === r.receipt_id ? l.to : l.from, other_summary: L.byId.get(l.from === r.receipt_id ? l.to : l.from)?.intent.summary }));
-  return { ...row, intent: r.intent, outcome_detail: r.outcome, verification_detail: { status: r.verification.status, checks: r.verification.checks }, criteria: e.criteria || [], artifacts: r.artifacts, labels: L.labels[r.receipt_id], changes_of_course: e.changes_of_course || [], human_interventions: r.human_interventions.length, links, workstream: w ? { id: w.id, title: w.title, status: w.status, receipts: w.receipts.length, sessions: w.sessions } : null, uncertain: uncertainties(r, L) };
+  return { ...row, intent: r.intent, outcome_detail: r.outcome, verification_detail: { status: r.verification.status, checks: r.verification.checks }, criteria: e.criteria || [], actions: r.actions, artifacts: r.artifacts, evidence: r.evidence || [], provenance: r.provenance || [], review: r.extensions?.['org.orgx.review/v1'] || null, inspection, labels: L.labels[r.receipt_id], changes_of_course: e.changes_of_course || [], human_interventions: r.human_interventions.length, links, workstream: w ? { id: w.id, title: w.title, status: w.status, receipts: w.receipts.length, sessions: w.sessions } : null, uncertain: uncertainties(r, L) };
 }
 function uncertainties(r, L) {
   const e = r.extensions?.[EXT] || {}; const out = []; const lab = L.labels[r.receipt_id];
-  if ((e.confidence?.outcome ?? 1) < 0.6) out.push(`outcome is a guess (${e.confidence.outcome})`);
+  if (!L.tax.overrides?.[r.receipt_id]?.outcome && (e.confidence?.outcome ?? 1) < 0.6) out.push(`outcome is a guess (${e.confidence.outcome})`);
   for (const c of (e.criteria || []).filter((c) => c.status === 'unknown')) out.push(`no evidence either way for: ${c.text}`);
   if (lab?.work_type?.confidence < 0.55) out.push(`work type is a guess (${lab.work_type.id}, ${lab.work_type.confidence})`);
   if (r.verification.status === 'unverified') out.push('nothing checked the change after it was made');
@@ -97,6 +99,13 @@ function uncertainties(r, L) {
 }
 
 export function workstreamDetail(id, L = ledger()) {
-  const w = L.built.workstreams.find((x) => x.id === id || x.id.endsWith(id)); if (!w) return null;
+  const w = resolveId(id, L.built.workstreams, (x) => x.id); if (!w) return null;
   return { ...w, members: w.receipts.map((rid) => rowOf(L.byId.get(rid), L)), links: L.built.links.filter((l) => w.receipts.includes(l.to) && w.receipts.includes(l.from)) };
+}
+
+export function resolveId(id, records, key) {
+  const exact = records.find((r) => key(r) === id); if (exact) return exact;
+  const matches = records.filter((r) => key(r).endsWith(id));
+  if (matches.length > 1) { const error = new Error(`Ambiguous ID "${id}"; use a full ID.`); error.code = 'AMBIGUOUS_ID'; throw error; }
+  return matches[0] || null;
 }
