@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readCorpus, validateCorpus, corpusManifest } from '../scripts/work-understanding/corpus.mjs';
 import { compareCase } from '../scripts/work-understanding/adapter.mjs';
+import { extractBaseline } from '../scripts/work-understanding/baseline.mjs';
 
 const cases = readCorpus();
 test('all 42 draft synthetic cases have unique identities and exact resolvable evidence', () => {
@@ -39,4 +40,9 @@ test('diagnostic reports omit restricted source text and reject invented referen
   const report = compareCase(c, { entities: [entity] }); assert.equal(report.invalid_provenance, 1);
   assert.ok(!JSON.stringify(report).includes('CONDITION_PLACEHOLDER'));
   assert.ok(!JSON.stringify(report).includes('Summarize the attached'));
+});
+test('frozen primitives keep failed result context above quoted passing output; role omissions are explicit', () => {
+  const output=extractBaseline(cases[38]);assert.equal(output.entities.find((e)=>e.type==='action').status,'failed');
+  const quoted=extractBaseline(cases[2]);assert.ok(!quoted.entities.some((e)=>e.type==='action'));
+  assert.equal(quoted.adapter_coverage.omitted.length,1);assert.equal(compareCase(cases[2],quoted).safety_gate,'unadjudicated');
 });
