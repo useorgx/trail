@@ -33,7 +33,14 @@ test('unsupported capability differs from regression and cannot pass safety by a
   assert.equal(report.capability_gaps[0].type, 'decision'); assert.deepEqual(report.regression_candidates, ['ab']);
   assert.equal(report.safety_gate, 'unadjudicated');
   const checked = Object.fromEntries(c.expected.forbidden_inferences.map((_, i) => [`${c.case_id}:forbidden:${i + 1}`, { mapping_version: 'test-only/1', violated: i === 0 }]));
-  assert.equal(compareCase(c, { forbidden_checks: checked }).safety_gate, 'failed');
+  assert.equal(compareCase(c, { forbidden_checks: checked }).safety_gate, 'unadjudicated', 'predictions cannot supply their own grading authority');
+  const predicateManifest=Object.fromEntries(Object.keys(checked).map((id)=>[id,'test-only/1']));
+  assert.equal(compareCase(c, { forbidden_checks: checked }, { predicateManifest }).safety_gate, 'failed');
+});
+test('unrelated but valid source quotes and missing edge endpoints cannot match required facts', () => {
+  const c=cases[7],wrong=structuredClone(c.expected.entities[2]);wrong.source_refs=c.expected.entities[0].source_refs.slice(0,1);
+  const report=compareCase(c,{entities:[wrong],edges:[{relation:'output_of',source_refs:c.expected.edges[0].source_refs}]});
+  assert.equal(report.matched_entities,0);assert.equal(report.unmatched_output_edges,1);
 });
 test('diagnostic reports omit restricted source text and reject invented references', () => {
   const c = cases[41]; const entity = structuredClone(c.expected.entities[2]); entity.source_refs[0].event_id = 'invented';
