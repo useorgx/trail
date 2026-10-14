@@ -82,7 +82,7 @@ export function canonicalArtifactKey(ref) {
   return JSON.stringify([ref.host.toLowerCase(),ref.repository_id,ref.kind,ref.object_id]);
 }
 export function checkApplies(check,artifact) {
-  const known=(r)=>typeof r==='string' && r.trim().length>0 && !['unknown','pending','unresolved'].includes(r.toLowerCase());
+  const known=(r)=>typeof r==='string' && r.trim().length>0 && !['unknown','pending','unresolved'].includes(r.trim().toLowerCase());
   return check.status==='passed' && known(check.revision) && known(artifact.revision) && check.revision===artifact.revision && check.artifact_key===canonicalArtifactKey(artifact);
 }
 export function recordedTransition(event) {
