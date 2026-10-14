@@ -11,7 +11,9 @@ const {writeReceipts}=await import('../src/store.mjs');
 const {saveTaxonomy}=await import('../src/taxonomy.mjs');
 const {serve}=await import('../src/serve.mjs');
 const r=syntheticReceipt();r.intent.summary='<script>alert(1)</script> Synthetic retry fix';
-writeReceipts('synthetic',[r]);saveTaxonomy({version:'trail-taxonomy/1',revision:7,overrides:{[r.receipt_id]:{outcome:'blocked',criteria:{c1:'unmet',c2:'unmet'},by:'human',at:'2026-10-14T11:00:00Z'}}});
+const earlier=syntheticReceipt('earlier');earlier.timestamps.started_at='2026-10-13T10:00:00Z';earlier.timestamps.completed_at='2026-10-13T10:01:00Z';
+for(const x of [r,earlier])x.artifacts.push({id:'synthetic-pr',kind:'pull_request',role:'output',name:'PR #55',ref:{system:'github',type:'pull_request',id:'55'}});
+writeReceipts('synthetic',[earlier,r]);saveTaxonomy({version:'trail-taxonomy/1',revision:7,overrides:{[r.receipt_id]:{outcome:'blocked',criteria:{c1:'unmet',c2:'unmet'},by:'human',at:'2026-10-14T11:00:00Z'}}});
 const {server,url}=await serve({port:47473});
 const browser=await chromium.launch({executablePath:process.env.TRAIL_CHROMIUM || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
 const reports=[];
@@ -19,7 +21,7 @@ try {
  for(const width of [1280,390,320]){
   const page=await browser.newPage({viewport:{width,height:900}});const errors=[];page.on('pageerror',(e)=>errors.push(e.message));
   const u=new URL(url);u.pathname='/receipts.html';await page.goto(u.href);
-  await page.locator('a.row').click();await page.locator('#detail h2').waitFor();
+  await page.locator('a.row').first().click();await page.locator('#detail h2').waitFor();
   assert.match(await page.locator('#detail').innerText(),/blocked/);
   assert.ok(await page.getByText('Unavailable here',{exact:true}).isVisible());
   assert.ok(await page.getByText('Original met → current unmet · local correction',{exact:true}).isVisible());
@@ -32,7 +34,8 @@ try {
   await page.locator('#criterion-c1').getByText('Source and proof',{exact:true}).click();
   assert.ok(await page.getByText('Measured proof: pass',{exact:false}).isVisible());
   assert.ok(await page.getByText('Criterion source quotation:',{exact:true}).first().isVisible());
-  assert.match(await page.locator('#detail').innerText(),/original criterion status: met/);
+  assert.ok(await page.getByText('A local correction leaves the earlier check on record.',{exact:true}).first().isVisible());
+  await page.getByText('Why linked',{exact:true}).first().click();assert.ok(await page.getByText(/Heuristic score:/).first().isVisible());assert.match(await page.getByText('Why linked',{exact:true}).first().locator('..').innerText(),/55/);
   await page.locator('#criterion-c1').getByRole('link',{name:'Inspect proof'}).first().click();assert.ok(await page.locator('#detail [id^="evidence-"] blockquote').first().isVisible());
   if(!await page.locator('#query').isVisible()) await page.locator('#search-panel > summary').click();
   await page.locator('#query').fill('outcome:blocked unmet:typecheck');await page.getByRole('button',{name:'Search',exact:true}).click();
@@ -52,7 +55,7 @@ try {
   await page.locator('#detail h2').focus();await page.keyboard.press('Tab');assert.notEqual(await page.evaluate(()=>document.activeElement===document.body),true);
   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);assert.equal(overflow,false);assert.deepEqual(errors,[]);
   if(process.env.TRAIL_QA_SCREENSHOTS) await page.screenshot({path:path.join(process.env.TRAIL_QA_SCREENSHOTS,`trail-inspection-${width}.png`),fullPage:true});
-  reports.push({width,overflow,page_errors:errors.length,correction_visible:true,acceptance_separate:true,back_reload_preserved:true,inert_untrusted_title:true,proof_cards_unique:true,proof_links_open_disclosures:true,keyboard_focus_preserved:true,compact_mobile_selection:width<=700});await page.close();
+  reports.push({width,overflow,page_errors:errors.length,correction_visible:true,acceptance_separate:true,back_reload_preserved:true,inert_untrusted_title:true,proof_cards_unique:true,proof_links_open_disclosures:true,keyboard_focus_preserved:true,compact_mobile_selection:width<=700,related_link_evidence_inspectable:true});await page.close();
  }
  const report={source:'synthetic_receipt',reports};if(process.argv[2]) fs.writeFileSync(process.argv[2],JSON.stringify(report,null,2));console.log(JSON.stringify(report));
 }finally{await browser.close();await new Promise((resolve)=>server.close(resolve));}
