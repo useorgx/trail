@@ -39,3 +39,10 @@ test('artifact proof binds hosting/repository/object/revision; mentions and fail
   assert.equal(recordedTransition({role:'assistant',operation:'deploy',result:'success'}).status,'unknown');assert.equal(recordedTransition({role:'tool',operation:'deploy',result:'success',exit_code:1}).status,'unknown');
   assert.equal(recordedTransition({role:'tool',operation:'pr_create',result:'success'}).status,'created');
 });
+test('object identities, empty/unknown revisions and inherited operation names are rejected',()=>{
+  const ref={host:'github.com',repository_id:'repo:atlas',kind:'pr',object_id:'17',revision:'aaaaaaa'};
+  for(const value of [{a:1},{b:2},[],17,'','  '])assert.throws(()=>canonicalArtifactKey({...ref,object_id:value}),{code:'canonical_repository_identity_required'});
+  for(const field of ['host','kind'])assert.throws(()=>canonicalArtifactKey({...ref,[field]:{}}),{code:'canonical_repository_identity_required'});
+  for(const revision of ['', '  ', 'unknown', 'pending', 'unresolved'])assert.equal(checkApplies({status:'passed',revision,artifact_key:canonicalArtifactKey(ref)},{...ref,revision}),false);
+  for(const operation of ['constructor','__proto__','toString'])assert.equal(recordedTransition({role:'tool',result:'success',operation}).status,'unknown');
+});

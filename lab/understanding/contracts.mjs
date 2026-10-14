@@ -78,14 +78,15 @@ export function orderEvents(events, { asKnownAt } = {}) {
 }
 
 export function canonicalArtifactKey(ref) {
-  if(!id(ref.repository_id)||!ref.host||!ref.kind||!ref.object_id)fail('canonical_repository_identity_required');
-  return JSON.stringify([ref.host.toLowerCase(),ref.repository_id,ref.kind,String(ref.object_id)]);
+  if(!id(ref.repository_id)||typeof ref.host!=='string'||!ref.host.trim()||typeof ref.kind!=='string'||!ref.kind.trim()||typeof ref.object_id!=='string'||!ref.object_id.trim())fail('canonical_repository_identity_required');
+  return JSON.stringify([ref.host.toLowerCase(),ref.repository_id,ref.kind,ref.object_id]);
 }
 export function checkApplies(check,artifact) {
-  return check.status==='passed' && typeof check.revision==='string' && check.revision===artifact.revision && check.artifact_key===canonicalArtifactKey(artifact);
+  const known=(r)=>typeof r==='string' && r.trim().length>0 && !['unknown','pending','unresolved'].includes(r.toLowerCase());
+  return check.status==='passed' && known(check.revision) && known(artifact.revision) && check.revision===artifact.revision && check.artifact_key===canonicalArtifactKey(artifact);
 }
 export function recordedTransition(event) {
   const transitions={pr_create:'created',pr_merge:'merged',deploy:'deployed',patch:'modified'};
   if(event.role!=='tool' || event.result!=='success' || event.exit_code!==undefined && event.exit_code!==0)return {status:'unknown',reason:'no_successful_tool_record'};
-  return {status:transitions[event.operation] || 'unknown',basis:'recorded_tool_metadata',authority:'does_not_establish_acceptance_or_permission'};
+  return {status:typeof event.operation==='string' && Object.hasOwn(transitions,event.operation)?transitions[event.operation]:'unknown',basis:'recorded_tool_metadata',authority:'does_not_establish_acceptance_or_permission'};
 }
