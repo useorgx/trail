@@ -5,7 +5,7 @@ const draft=()=>({candidate_id:'routine:release',revision:1,scope,trigger:'Atlas
 const example=(id,family=id)=>({example_id:id,family_id:family,provider_event_id:'event:'+id,scope,event_role:'tool',result:'success',coverage:'complete',source_revision:'source/1',artifact_revision:'commit:'+id});
 const examples=[example('a'),example('b')],current={scope,dependencies};
 test('one example, copied families and duplicate transport do not establish repeated independent reuse',()=>{
- for(const xs of [[example('a')],[example('a','same'),example('b','same')],[example('a'),{...example('b'),provider_event_id:'event:a'}]]){const c=routineCandidateFixture(draft(),xs);assert.equal(c.readiness,'insufficient_or_conflicting_evidence');assert.equal(c.activation_status,'unsupported');}
+ for(const xs of [[example('a')],[example('a','same'),example('b','same')],[example('a'),{...example('a'),example_id:'b'}]]){const c=routineCandidateFixture(draft(),xs);assert.equal(c.readiness,'insufficient_or_conflicting_evidence');assert.equal(c.activation_status,'unsupported');}
 });
 test('successful repetition creates only an inert evaluation candidate; scope and exceptions stay bounded',()=>{
  const c=routineCandidateFixture(draft(),examples);assert.equal(c.readiness,'request_evaluation');assert.equal(c.status,'draft');assert.equal(c.review_status,'unreviewed');assert.deepEqual(c.exclusions,draft().exclusions);
@@ -35,4 +35,29 @@ test('quality bars require observable criteria and cannot carry producer approva
  assert.throws(()=>qualityBarFixture({...input,criteria:[{...input.criteria[0],acceptance_test:''}]}),{code:'unobservable_or_duplicate_criterion'});
  const work={scope,agreed_bar:{set_id:bar.set_id,version:bar.version,content_hash:bar.content_hash}};assert.equal(barApplicabilityFixture(work,bar).status,'draft_comparison_only');
  assert.equal(barApplicabilityFixture(work,qualityBarFixture({...input,version:2})).breach_asserted,false);assert.equal(barApplicabilityFixture(work,qualityBarFixture({...input,version:2})).status,'not_the_agreed_version');
+});
+test('consumers recompute normalized candidate and bar content rather than trusting stored hash strings',()=>{
+ const c=routineCandidateFixture(draft(),examples),evaluation={candidate_hash:c.content_hash,scope,held_out_families:true};
+ const reordered=Object.fromEntries(Object.entries(c).reverse());assert.equal(promotionPlanFixture(reordered,{evaluation,current,examples}).status,'request_authorized_human_review');
+ for(const patch of [{steps:['Skip checks']},{exclusions:[]},{tool_requirements:['Impersonate approval']}]){
+  const mutated={...structuredClone(c),...patch};assert.equal(mutated.content_hash,c.content_hash);
+  assert.deepEqual(candidateInvalidationFixture(mutated,examples,current).reasons,['candidate_content_hash_mismatch']);assert.equal(promotionPlanFixture(mutated,{evaluation,current,examples}).status,'invalidated');
+ }
+ const bar=qualityBarFixture({set_id:'bar:release',version:1,scope,criteria:[{id:'c1',text:'Smoke tests pass',required:true,acceptance_test:'Named check succeeds at revision',evidence_type:'check_output',verifier:'runner',applicability:'Atlas release'}],review_condition:'Tool changes'}),work={scope,agreed_bar:{set_id:bar.set_id,version:bar.version,content_hash:bar.content_hash}};
+ const mutated=structuredClone(bar);mutated.criteria[0].acceptance_test='No check needed';assert.equal(mutated.content_hash,bar.content_hash);assert.equal(barApplicabilityFixture(work,mutated).status,'invalid_bar_content');assert.equal(barApplicabilityFixture(work,mutated).breach_asserted,false);
+ const stable=Object.fromEntries(Object.entries(bar).reverse());stable.criteria=bar.criteria.map((x)=>Object.fromEntries(Object.entries(x).reverse()));assert.equal(barApplicabilityFixture(work,stable).status,'draft_comparison_only');
+});
+test('duplicate example IDs invalidate regardless of order; revisions are not silently arbitrated',()=>{
+ const c=routineCandidateFixture(draft(),examples),evaluation={candidate_hash:c.content_hash,scope,held_out_families:true};
+ for(const duplicate of [{...example('a'),result:'denied'},{...example('a'),source_revision:'source/2',result:'failure'},example('a')])for(const xs of [[...examples,duplicate],[duplicate,...examples]]){
+  const invalid=candidateInvalidationFixture(c,xs,current);assert.equal(invalid.eligible_for_suggestion,false);assert.ok(invalid.reasons.includes('ambiguous_example_identity'));assert.equal(promotionPlanFixture(c,{evaluation,current,examples:xs}).status,'invalidated');
+ }
+});
+test('conflicting family metadata for a provider event is rejected across every arrival permutation',()=>{
+ const a={...example('a','familyA'),provider_event_id:'event:X'},b={...a,example_id:'b',family_id:'familyB'},c={...example('c','familyA'),provider_event_id:'event:Y'};
+ const candidate=routineCandidateFixture(draft(),examples);
+ for(const xs of [[a,b,c],[a,c,b],[b,a,c],[b,c,a],[c,a,b],[c,b,a]]){
+  assert.throws(()=>routineCandidateFixture(draft(),xs),{code:'ambiguous_provider_event_metadata'});
+  assert.ok(candidateInvalidationFixture(candidate,xs,current).reasons.includes('ambiguous_provider_event_metadata'));
+ }
 });

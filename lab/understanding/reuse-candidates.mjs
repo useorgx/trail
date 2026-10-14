@@ -7,6 +7,21 @@ const sameScope=(a,b)=>a?.workspace_id===b?.workspace_id&&a?.repository_id===b?.
 const allowed=(v,keys)=>!Object.keys(v).some((k)=>!keys.includes(k));
 const knownScope=(v)=>text(v?.workspace_id)&&text(v?.repository_id);
 const qualified=(e,scope)=>sameScope(e.scope,scope)&&e.event_role==='tool'&&e.result==='success'&&e.coverage==='complete'&&!e.retracted&&!e.corrected&&text(e.source_revision)&&text(e.artifact_revision);
+// Local draft-content normalization only; this does not alter portable receipt integrity.
+const normalized=(v,depth=0)=>{
+  if(depth>20)fail('invalid_draft_content');
+  if(v===null||typeof v==='string'||typeof v==='boolean'||typeof v==='number'&&Number.isFinite(v))return v;
+  if(Array.isArray(v))return v.map((x)=>normalized(x,depth+1));
+  if(!v||typeof v!=='object'||![Object.prototype,null].includes(Object.getPrototypeOf(v)))fail('invalid_draft_content');
+  return Object.fromEntries(Object.keys(v).sort().map((k)=>[k,normalized(v[k],depth+1)]));
+};
+const contentHash=(record)=>digest(JSON.stringify(normalized(Object.fromEntries(Object.entries(record).filter(([k])=>k!=='content_hash')))));
+const intact=(record)=>{try{return text(record?.content_hash)&&contentHash(record)===record.content_hash;}catch{return false;}};
+const providerConflict=(examples)=>{
+  const events=new Map();for(const e of examples){const metadata=JSON.stringify(normalized({family_id:e.family_id??null,scope:e.scope??null,source_revision:e.source_revision??null,artifact_revision:e.artifact_revision??null,event_role:e.event_role??null,result:e.result??null,coverage:e.coverage??null,retracted:e.retracted??false,corrected:e.corrected??false}));
+    if(events.has(e.provider_event_id)&&events.get(e.provider_event_id)!==metadata)return true;events.set(e.provider_event_id,metadata);}
+  return false;
+};
 
 export function routineCandidateFixture(input,examples) {
   const keys=['candidate_id','revision','scope','trigger','prerequisites','steps','inputs','outputs','exclusions','tool_requirements','dependencies'];
@@ -14,19 +29,25 @@ export function routineCandidateFixture(input,examples) {
   if(!input.dependencies||Array.isArray(input.dependencies)||!['tool','quality_bar'].every((k)=>text(input.dependencies[k]))||Object.values(input.dependencies).some((v)=>!text(v)))fail('unpinned_dependencies');
   const ids=new Set();for(const e of examples){if(!text(e.example_id)||!text(e.family_id)||!text(e.provider_event_id)||ids.has(e.example_id))fail('invalid_example_identity');ids.add(e.example_id);}
   const selected=examples.filter((e)=>sameScope(e.scope,input.scope)),families=new Set(),transport=new Set();
+  if(providerConflict(selected))fail('ambiguous_provider_event_metadata');
   for(const e of selected.filter((e)=>qualified(e,input.scope)))if(!transport.has(e.provider_event_id)){transport.add(e.provider_event_id);families.add(e.family_id);}
   const counterexamples=selected.filter((e)=>!qualified(e,input.scope)).map((e)=>({example_id:e.example_id,reason:e.retracted?'retracted':e.corrected?'corrected':e.coverage!=='complete'?'partial_or_unknown_coverage':e.event_role!=='tool'?'non_tool_claim':e.result!=='success'?'failed_denied_or_unknown':'missing_revision'}));
   const value={schema_version:'org.orgx.understanding/v1',type:'routine_candidate',status:'draft',...structuredClone(input),
     source_versions:selected.map((e)=>({example_id:e.example_id,source_revision:e.source_revision??null,artifact_revision:e.artifact_revision??null,provider_event_id:e.provider_event_id,family_id:e.family_id})),counterexamples,
     declared_independent_families:families.size,evaluation_status:'not_evaluated',review_status:'unreviewed',activation_status:'unsupported',
     readiness:families.size>=2&&!counterexamples.length?'request_evaluation':'insufficient_or_conflicting_evidence'};
-  return {...value,content_hash:digest(JSON.stringify(value))};
+  return {...value,content_hash:contentHash(value)};
 }
 export function candidateInvalidationFixture(candidate,examples,current) {
+  if(!intact(candidate))return {eligible_for_suggestion:false,eligible_for_activation:false,reasons:['candidate_content_hash_mismatch'],rollback:'future_selection_only; external actions require separate authorization'};
   const reasons=[];if(!sameScope(candidate.scope,current.scope))reasons.push('scope_changed');
+  // This slice has no source revision arbitration: every ID must identify one record.
+  // Duplicate IDs, including identical transport copies, conservatively invalidate in any order.
+  const ids=new Set(),byId=new Map();for(const e of examples){if(!text(e?.example_id)||ids.has(e.example_id))reasons.push('ambiguous_example_identity');else{ids.add(e.example_id);byId.set(e.example_id,e);}}
+  if(providerConflict(examples.filter((e)=>sameScope(e.scope,candidate.scope))))reasons.push('ambiguous_provider_event_metadata');
   for(const[k,v]of Object.entries(candidate.dependencies))if(current.dependencies?.[k]!==v)reasons.push('dependency_changed');
   if(examples.filter((e)=>sameScope(e.scope,candidate.scope)).some((e)=>!candidate.source_versions.some((old)=>old.example_id===e.example_id)))reasons.push('new_relevant_evidence');
-  for(const old of candidate.source_versions){const e=examples.find((e)=>e.example_id===old.example_id);
+  for(const old of candidate.source_versions){const e=byId.get(old.example_id);
     if(!e)reasons.push('source_unavailable');else if(e.retracted||e.corrected||e.source_revision!==old.source_revision||e.artifact_revision!==old.artifact_revision||e.provider_event_id!==old.provider_event_id||e.family_id!==old.family_id||!qualified(e,candidate.scope))reasons.push('source_corrected_retracted_or_changed');}
   if(current.evaluation_regression===true)reasons.push('evaluation_regression');
   return {eligible_for_suggestion:!reasons.length,eligible_for_activation:false,reasons:[...new Set(reasons)],rollback:'future_selection_only; external actions require separate authorization'};
@@ -41,9 +62,10 @@ export function qualityBarFixture(input) {
   if(!allowed(input,['set_id','version','scope','criteria','review_condition'])||!text(input.set_id)||!Number.isSafeInteger(input.version)||input.version<1||!knownScope(input.scope)||!Array.isArray(input.criteria)||!input.criteria.length)fail('invalid_or_authority_bearing_bar');
   const ids=new Set();for(const c of input.criteria){if(!allowed(c,['id','text','required','acceptance_test','evidence_type','verifier','applicability'])||!text(c.id)||ids.has(c.id)||!text(c.text)||typeof c.required!=='boolean'||!text(c.acceptance_test)||!text(c.evidence_type)||!text(c.verifier)||!text(c.applicability))fail('unobservable_or_duplicate_criterion');ids.add(c.id);}
   const value={schema_version:'org.orgx.understanding/v1',type:'criterion_set',status:'draft',...structuredClone(input),agreement:'not_authenticated'};
-  return {...value,content_hash:digest(JSON.stringify(value))};
+  return {...value,content_hash:contentHash(value)};
 }
 export function barApplicabilityFixture(work,bar) {
+  if(!intact(bar))return {status:'invalid_bar_content',breach_asserted:false,reason:'bar_content_hash_mismatch'};
   if(!sameScope(work.scope,bar.scope))return {status:'out_of_scope',breach_asserted:false};
   if(work.agreed_bar?.set_id!==bar.set_id||work.agreed_bar?.version!==bar.version||work.agreed_bar?.content_hash!==bar.content_hash)return {status:'not_the_agreed_version',breach_asserted:false};
   return {status:'draft_comparison_only',breach_asserted:false,agreement_authority:'requires_separate_authenticated_record'};
