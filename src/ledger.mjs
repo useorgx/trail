@@ -37,8 +37,8 @@ export function overallConfidence(r, lab) {
 /** A person's answers from the review queue, applied over trail's guesses (outcome, criteria). */
 const reviewed = (r, L) => projectReviewedWork(r, L.tax);
 
-export function rowOf(r0, L) {
-  const { r, e, inspection } = reviewed(r0, L); const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
+export function rowOf(r0, L, projection = reviewed(r0, L)) {
+  const { r, e, inspection } = projection; const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
   const crit = e.criteria || [];
   return {
     id: r.receipt_id, at: r.timestamps.started_at, client: r.actor.id, repo: e.repo || e.project || null,
@@ -49,6 +49,7 @@ export function rowOf(r0, L) {
     prs: r.artifacts.filter((a) => a.kind === 'pull_request').map((a) => a.ref.id), files: r.artifacts.filter((a) => a.ref?.type === 'file').length,
     cost_usd: r.cost?.total ?? 0, confidence: overallConfidence(r, lab), reviewed: !!L.tax.overrides[r.receipt_id],
     review_revision: inspection.review_revision, outcome_basis: inspection.outcome_basis, acceptance: inspection.acceptance, coverage: inspection.coverage,
+    conflicts: inspection.conflicts,
   };
 }
 

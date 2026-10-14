@@ -29,9 +29,16 @@ function render(r) {
     el('p',`Acceptance: ${r.acceptance.status} (producer reported; shared human judgment unavailable).`,'muted'));
   if(r.inspection.conflicts.length) detail.append(el('p','Conflicting result and criterion states need review. Original claims are preserved.'));
   if(r.acceptance.origin === 'legacy_outcome_mapping') detail.append(el('p','Legacy acceptance came from an outcome correction, not a separate acceptance action.','muted'));
+  const objective = section('Objective'); objective.append(el('p',r.intent.objective || 'Full objective not included in this record.'));
+  const checks = section('Recorded checks'); for(const c of r.verification_detail.checks || []) checks.append(el('p',`${c.name} — ${c.status} (recorded check; a current correction does not change this result)`));
   const criteria = section('Criteria'); if (!r.criteria.length) criteria.append(el('p','No criteria extracted for this work.'));
   for (const c of r.criteria) { const d = el('details'); d.id = 'criterion-' + c.id; d.append(el('summary',`${c.status.toUpperCase()} · ${c.text}`));
     d.append(el('p',c.by === 'human' ? 'Locally corrected. A correction does not create a passing test.' : 'Inferred by the producer.'));
+    const reviewCriterion = (r.review?.criteria || []).find((x)=>x.criterion_id===c.id);
+    const originalCriterion = r.inspection.original.criteria.find((x)=>x.id===c.id);
+    if(c.by) d.append(el('p',`Current local correction: ${c.status.toUpperCase()}; original criterion status: ${originalCriterion?.status || 'unknown'}. Evidence references below are retained from the original record.`));
+    for(const ref of reviewCriterion?.source_refs || []) { d.append(el('p','Criterion source quotation:','muted'),el('blockquote',ref.quote || 'Quotation not included')); }
+    for(const lens of ['judged','measured','observed','outcome']) {const value=reviewCriterion?.lenses?.[lens];d.append(el('p',`${lens[0].toUpperCase()+lens.slice(1)} proof: ${value?.status || 'unavailable'}${value?.note ? ' · '+value.note : ''}`));}
     const proof = r.evidence.filter((e) => c.evidence_ids.includes(e.id)); for (const e of proof) d.append(evidenceRow(e));
     if (!proof.length) d.append(el('p','No supporting evidence attached.','muted')); criteria.append(d); }
   const artifacts = section('Artifacts'); for (const a of r.artifacts) artifacts.append(el('p',`${a.name} · producer reports ${a.role}; delivery not established here · ${a.ref?.id || 'Identity unavailable'}`));
@@ -48,6 +55,7 @@ function render(r) {
 async function load() {
   controller?.abort(); controller = new AbortController(); const signal = controller.signal; const state = new URL(location.href);
   document.body.dataset.selected=String(state.searchParams.has('id'));
+  if(!state.searchParams.has('id')) detail.replaceChildren(el('p','Select a receipt to inspect its evidence.'));
   query.value = state.searchParams.get('q') || ''; message.textContent = 'Loading local receipts…';
   try {
     const data = await read('/api/v1/receipts',{q:query.value,limit:20,offset:state.searchParams.get('offset') || 0},signal); if (signal.aborted) return;

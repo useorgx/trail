@@ -47,6 +47,21 @@ test('contrary local criterion corrections do not leave inferred success or perm
   assert.equal(projectReviewedWork(r,explicit).r.outcome.status,'succeeded','preserve both explicit local calls for review');
   assert.throws(()=>withGraph(r,{tax:explicit,labels:{},built:{byReceipt:{}}}),/Conflicting local/);
 });
+test('criterion-only conflicts retain equal outcome, basis and conflicts on every read surface', () => {
+  const a=syntheticReceipt('earlier'),r=syntheticReceipt();a.timestamps.started_at='2026-10-13T10:00:00Z';
+  for(const x of [a,r])x.artifacts.push({id:'shared-pr',kind:'pull_request',name:'PR #55',role:'output',ref:{system:'github',type:'pull_request',id:'55'}});
+  writeReceipts('synthetic',[a,r]);saveTaxonomy(tax(r,{criteria:{c1:'unmet'}}));const L=ledger({fresh:true}),row=rowOf(r,L),d=receiptDetail(r.receipt_id,L),s=search(`unmet:tests`,{L}).results.find((x)=>x.id===r.receipt_id),w=workstreamDetail(row.workstream,L).members.find((x)=>x.id===r.receipt_id),wire=withGraph(r,L);
+  for(const view of [row,d,s,w]){assert.equal(view.outcome,'partially_succeeded');assert.equal(view.outcome_basis,'inferred_conflict');assert.deepEqual(view.conflicts,d.inspection.conflicts);}
+  assert.equal(wire.extensions[EXT].read_projection.outcome_basis,'inferred_conflict');assert.deepEqual(wire.extensions[EXT].read_projection.conflicts,d.inspection.conflicts);
+  assert.equal(wire.outcome.status,'partially_succeeded');assert.equal(d.criteria[0].confidence,undefined);
+  assert.equal(d.outcome_detail.criteria_results[0].confidence,undefined);assert.equal(d.inspection.original.criteria[0].confidence,0.9);
+  assert.equal(d.provenance.find((p)=>p.path==='/outcome/criteria_results/0/status').basis,'declared');
+  assert.equal(d.inspection.original.provenance.find((p)=>p.path==='/outcome/status').basis,'inferred');
+  assert.deepEqual(d.verification_detail.checks,r.verification.checks);assert.equal(d.acceptance.status,'pending');
+  assert.ok(validateAgentWorkReceipt(wire).ok,JSON.stringify(validateAgentWorkReceipt(wire).issues));
+  // Restore the explicit correction fixture for API and CLI tests below.
+  saveTaxonomy(tax(r,{outcome:'blocked',criteria:{c2:'unmet'}}));
+});
 test('coverage discloses exact cap boundaries and never reconstructs missing source totals', () => {
   const at='2026-10-14T10:00:00Z';
   const build=(tools,messages=0)=>{const st=[{at:0,kind:'ask',text:'Inspect synthetic work',ts:at},...tools.map((x,i)=>({at:i+1,kind:'tool',ts:at,tool:'Bash',action:'run',target:'synthetic',result:'ok',...x})),...Array.from({length:messages},(_,i)=>({at:tools.length+i+1,kind:'say',text:'Recorded statement',ts:at}))];return buildReceipt({client:'synthetic',id:'caps'}, {root:'T1',spans:[[0,st.length]],outcome:{kind:'open'},conf:{}},st,{ask:'Inspect synthetic work'});};

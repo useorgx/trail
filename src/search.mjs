@@ -24,7 +24,7 @@ export function parseQuery(q) {
 let index = null;
 function buildIndex(L) {
   const docs = L.receipts.map((r0) => {
-    const { r } = projectReviewedWork(r0, L.tax);
+    const projection = projectReviewedWork(r0, L.tax); const { r } = projection;
     const e = r.extensions?.[EXT] || {}; const ws = L.built.byReceipt[r.receipt_id]; const w = ws && L.built.workstreams.find((x) => x.id === ws);
     const f = {
       summary: tokens(r.intent.summary), objective: tokens(r.intent.objective), outcome: tokens(r.outcome.summary),
@@ -34,7 +34,7 @@ function buildIndex(L) {
     const tf = new Map(); let len = 0;
     // Each field counts a term once (weighted): a long command log repeating a word must not outrank the ask.
     for (const [k, ws] of Object.entries(f)) for (const t of new Set(ws)) { tf.set(t, (tf.get(t) || 0) + FIELDS[k]); len += FIELDS[k]; }
-    return { r, tf, len };
+    return { r, projection, tf, len };
   });
   const df = new Map(); for (const d of docs) for (const t of d.tf.keys()) df.set(t, (df.get(t) || 0) + 1);
   const avg = docs.reduce((a, d) => a + d.len, 0) / Math.max(1, docs.length);
@@ -69,7 +69,7 @@ export function search(q, { limit = 20, L = ledger() } = {}) {
   const { filters, text } = parseQuery(q); const terms = [...new Set(tokens(text))];
   const k1 = 1.2, b = 0.75, N = index.docs.length; const out = [];
   for (const d of index.docs) {
-    const row = rowOf(d.r, L); if (!matches(d.r, row, filters, L)) continue;
+    const row = rowOf(d.r, L, d.projection); if (!matches(d.r, row, filters, L)) continue;
     let score = 0; const hit = [];
     for (const t of terms) { const f = d.tf.get(t); if (!f) continue; const idf = Math.log(1 + (N - index.df.get(t) + 0.5) / (index.df.get(t) + 0.5)); score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.len / index.avg)); hit.push(t); }
     if (terms.length && !hit.length) continue;
@@ -84,8 +84,8 @@ export function search(q, { limit = 20, L = ledger() } = {}) {
 /** One receipt with the context an agent needs to judge it: its workstream, its neighbours, and what is uncertain. */
 export function receiptDetail(id, L = ledger()) {
   const r0 = resolveId(id, L.receipts, (x) => x.receipt_id); if (!r0) return null;
-  const { r, inspection } = projectReviewedWork(r0, L.tax);
-  const row = rowOf(r, L); const e = r.extensions?.[EXT] || {}; const w = row.workstream && L.built.workstreams.find((x) => x.id === row.workstream);
+  const projection = projectReviewedWork(r0, L.tax); const { r, inspection } = projection;
+  const row = rowOf(r0, L, projection); const e = r.extensions?.[EXT] || {}; const w = row.workstream && L.built.workstreams.find((x) => x.id === row.workstream);
   const links = L.built.links.filter((l) => l.from === r.receipt_id || l.to === r.receipt_id).map((l) => ({ ...l, other: l.from === r.receipt_id ? l.to : l.from, other_summary: L.byId.get(l.from === r.receipt_id ? l.to : l.from)?.intent.summary }));
   return { ...row, intent: r.intent, outcome_detail: r.outcome, verification_detail: { status: r.verification.status, checks: r.verification.checks }, criteria: e.criteria || [], actions: r.actions, artifacts: r.artifacts, evidence: r.evidence || [], provenance: r.provenance || [], review: r.extensions?.['org.orgx.review/v1'] || null, inspection, labels: L.labels[r.receipt_id], changes_of_course: e.changes_of_course || [], human_interventions: r.human_interventions.length, links, workstream: w ? { id: w.id, title: w.title, status: w.status, receipts: w.receipts.length, sessions: w.sessions } : null, uncertain: uncertainties(r, L) };
 }
