@@ -32,7 +32,7 @@ npx -y @useorgx/trail walls --json
 npx -y @useorgx/trail open
 ```
 
-Open the tokenized localhost URL printed by `open`. Expand a wall to inspect its sample and suggested fix; the project filters help narrow the timeline. **Success:** a wall identifies the failure, how many separate sessions hit it, and a rule you can review before adopting. If there are no walls, that is a valid result; try `--demo` to explore a populated example. Press Ctrl-C to stop the browser server.
+Open the tokenized localhost URL printed by `open`. Expand a wall to inspect its sample and suggested fix; search by project name to narrow the timeline. **Success:** a wall identifies the failure, how many separate sessions hit it, and a rule you can review before adopting. If there are no walls, that is a valid result; try `--demo` to explore a populated example. Press Ctrl-C to stop the browser server.
 
 ## Docs and troubleshooting
 
@@ -159,7 +159,7 @@ Trail is built on other people's ideas. None of them endorse it; this is what we
 
 | Work | What trail took from it |
 | --- | --- |
-| [Clio: privacy-preserving insights into real-world AI use](https://www.anthropic.com/research/clio) · Alex Tamkin and the Clio team at Anthropic, 2024 | A fix’s public numbers appear only once at least 5 separate people have adopted it, and uploads carry counts, not words (thread titles only if you opt in with --with-titles). |
+| [Clio: privacy-preserving insights into real-world AI use](https://www.anthropic.com/research/clio) · Alex Tamkin and the Clio team at Anthropic, 2024 | A fix’s public numbers appear only once at least 5 separate people have adopted it. Default aggregate `trail sync` sends counts and move strings, with titles only through `--with-titles`. Receipt sync, receipt watch, and opt-in receipt hooks can send asks, summaries, and evidence excerpts; see [Privacy](#privacy). |
 | [Error analysis for AI systems (open coding → axial coding → count → judge)](https://hamel.dev/blog/posts/evals-faq/why-is-error-analysis-so-important-in-llm-evals-and-how-is-it-performed.html) · Hamel Husain and Shreya Shankar, 2025 | The walls are failure types counted across real sessions, and trail’s classifier is checked against human labels in a labeling lab. (We wrote our codebook before our notes, which they warn against; the next labeling pass starts from notes.) |
 | [Sniffly: a dashboard over your local Claude Code logs](https://github.com/chiphuyen/sniffly) · Chip Huyen, 2025 | Lead with one surprising number about your own agents, found locally. |
 | [Docent: searching agent transcripts against a rubric, with cited evidence](https://transluce.org/docent/blog/introducing-docent) · Transluce, 2025 | Every adopted fix is reported as a measured before and after, not a claim. |
