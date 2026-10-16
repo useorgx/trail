@@ -39,6 +39,7 @@ button.link{all:unset;cursor:pointer;color:var(--lime)}
 <body>
 <header>
   <div class="brand"><i></i>orgx trail</div><div class="meta mono" id="meta">loading…</div>
+  <a id="inspect-work" href="receipts.html">Inspect work receipts</a>
   <input type="search" id="q" placeholder="Search threads" aria-label="Search threads">
   <div class="chips" id="fo" role="group" aria-label="Origin"></div>
   <div class="chips" id="fs" role="group" aria-label="Status"></div>
@@ -59,6 +60,7 @@ const fmt = (n) => Math.round(n).toLocaleString('en-US'); const pct = (x) => Mat
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const day = (ms) => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
+document.getElementById('inspect-work').href = 'receipts.html?k=' + encodeURIComponent(K);
 fetch('data.json?k=' + K).then((r) => r.json()).then((d) => { D = d; init(); });
 
 function init() {

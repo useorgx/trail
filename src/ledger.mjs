@@ -7,6 +7,8 @@ import { EXT } from './receipt.mjs';
 import { buildWorkstreams, parentsFor, JOIN_THRESHOLD } from './workstreams.mjs';
 import { loadTaxonomy, labelAll, LOW } from './taxonomy.mjs';
 import { withIntegrity } from './integrity.mjs';
+import { projectReviewedWork } from './projection.mjs';
+export { projectReviewedWork } from './projection.mjs';
 
 let cache = null;
 /** Build (or reuse) the ledger. `persist` writes workstreams.json. */
@@ -14,8 +16,9 @@ export function ledger({ persist = false, fresh = false } = {}) {
   if (cache && !fresh && !persist) return cache;
   const receipts = allReceipts();
   const tax = loadTaxonomy();
-  const built = buildWorkstreams(receipts);
-  const labels = labelAll(receipts, built, tax);
+  const resolved = receipts.map((r) => projectReviewedWork(r, tax).r);
+  const built = buildWorkstreams(resolved);
+  const labels = labelAll(resolved, built, tax);
   const parents = parentsFor(built);
   const byId = new Map(receipts.map((r) => [r.receipt_id, r]));
   const L = { receipts, byId, built, tax, labels, parents };
@@ -32,16 +35,10 @@ export function overallConfidence(r, lab) {
 
 /** A compact row: what a list, a search result or an agent needs to decide whether to open the receipt. */
 /** A person's answers from the review queue, applied over trail's guesses (outcome, criteria). */
-function reviewed(r, L) {
-  const o = L.tax.overrides[r.receipt_id]; if (!o || (!o.outcome && !o.criteria)) return { r, e: ext(r) };
-  const e = { ...ext(r), criteria: (ext(r).criteria || []).map((c) => (o.criteria?.[c.id] ? { ...c, status: o.criteria[c.id], confidence: 1, by: o.by } : c)) };
-  const ACC = { succeeded: 'accepted', partially_succeeded: 'changes_requested', failed: 'rejected', abandoned: 'rejected', blocked: 'changes_requested' };
-  const outcome = o.outcome ? { ...r.outcome, status: o.outcome === 'abandoned' ? 'failed' : o.outcome, acceptance: { status: ACC[o.outcome] || 'pending', actor: { type: 'human', id: 'workspace-member' }, occurred_at: o.at, notes: 'Answered in the trail review queue.' } } : r.outcome;
-  return { r: { ...r, outcome, extensions: { ...r.extensions, [EXT]: e } }, e };
-}
+const reviewed = (r, L) => projectReviewedWork(r, L.tax);
 
-export function rowOf(r0, L) {
-  const { r, e } = reviewed(r0, L); const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
+export function rowOf(r0, L, projection = reviewed(r0, L)) {
+  const { r, e, inspection } = projection; const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
   const crit = e.criteria || [];
   return {
     id: r.receipt_id, at: r.timestamps.started_at, client: r.actor.id, repo: e.repo || e.project || null,
@@ -51,12 +48,15 @@ export function rowOf(r0, L) {
     criteria: { met: crit.filter((c) => c.status === 'met').length, unmet: crit.filter((c) => c.status === 'unmet').length, unknown: crit.filter((c) => c.status === 'unknown').length },
     prs: r.artifacts.filter((a) => a.kind === 'pull_request').map((a) => a.ref.id), files: r.artifacts.filter((a) => a.ref?.type === 'file').length,
     cost_usd: r.cost?.total ?? 0, confidence: overallConfidence(r, lab), reviewed: !!L.tax.overrides[r.receipt_id],
+    review_revision: inspection.review_revision, outcome_basis: inspection.outcome_basis, acceptance: inspection.acceptance, coverage: inspection.coverage,
+    conflicts: inspection.conflicts,
   };
 }
 
 /** A receipt ready to leave the machine: lineage from the work graph, labels in the trail extension. */
 export function withGraph(r0, L) {
-  const { r, e } = reviewed(r0, L); const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
+  const { r, e, inspection } = reviewed(r0, L); const lab = L.labels[r.receipt_id]; const ws = L.built.byReceipt[r.receipt_id];
+  if (inspection.conflicts.length && r.outcome.status === 'succeeded') throw new Error('Conflicting local outcome and criterion judgments must be resolved before export or sync.');
   const parents = (L.parents[r.receipt_id] || []).map((p) => ({ system: 'orgx-trail', type: 'agent_work_receipt', id: p.id, metadata: { relationship: p.relationship, confidence: p.confidence, linker: L.built.linker } }));
   const links = L.built.links.filter((l) => l.to === r.receipt_id || l.from === r.receipt_id).slice(0, 20);
   return withIntegrity({
@@ -75,17 +75,19 @@ export function withGraph(r0, L) {
 
 /**
  * Questions about your own receipts that only you can settle: did it get done, was each criterion met. Answers stay
- * local and win over trail's guesses; synced receipts carry them as acceptance. Team-level questions (is this a real
+ * local and win over trail's guesses; outcome correction is separate from acceptance. Team-level questions (is this a real
  * area of the codebase, are these two efforts the same, which initiative is this) are asked in OrgX, where the
  * answers are shared and the whole team's receipts are in view.
  */
 export function reviewQueue(L, { limit = 50 } = {}) {
   const items = [];
   for (const r of L.receipts) {
-    const e = ext(r); const substantial = r.actions.length >= 5 || r.artifacts.length > 0;
-    if (!substantial || L.tax.overrides[r.receipt_id]?.by === 'human') continue;
+    const { r: resolved, e, inspection } = reviewed(r, L); const substantial = r.actions.length >= 5 || r.artifacts.length > 0;
+    if (!substantial) continue;
+    const o = L.tax.overrides[r.receipt_id];
     const oc = e.confidence?.outcome;
-    if (typeof oc === 'number' && oc < 0.6 && ['succeeded', 'partially_succeeded', 'unknown'].includes(r.outcome.status)) items.push({ kind: 'outcome', receipt: r.receipt_id, question: 'Did this piece of work get done?', guess: r.outcome.status, confidence: oc, answers: ['succeeded', 'partially_succeeded', 'failed', 'blocked', 'abandoned'], value: (1 - oc) * (1 + r.artifacts.length / 5), at: r.timestamps.started_at, summary: r.intent.summary });
+    const conflict = inspection.conflicts.length > 0;
+    if (conflict || (!(o?.by === 'human' && o.outcome) && typeof oc === 'number' && oc < 0.6 && ['succeeded', 'partially_succeeded', 'unknown'].includes(resolved.outcome.status))) items.push({ kind: 'outcome', receipt: r.receipt_id, question: conflict ? 'Resolve the conflicting result and criterion states.' : 'Did this piece of work get done?', guess: resolved.outcome.status, confidence: conflict ? null : oc, answers: ['succeeded', 'partially_succeeded', 'failed', 'blocked', 'abandoned'], value: conflict ? 1.5 : (1 - oc) * (1 + r.artifacts.length / 5), at: r.timestamps.started_at, summary: r.intent.summary });
     for (const c of (e.criteria || []).filter((c) => c.status === 'unknown')) items.push({ kind: 'criterion', receipt: r.receipt_id, criterion: c.id, question: `Was this met: “${c.text}”?`, guess: 'unknown', confidence: c.confidence, answers: ['met', 'unmet'], value: 0.6, at: r.timestamps.started_at, summary: r.intent.summary });
   }
   // Recent work first within equal value: it is what you still remember.

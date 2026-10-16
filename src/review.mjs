@@ -122,7 +122,7 @@ export function buildReview({ session, goal, mine, thread, threads = [], receipt
   const layers = {
     inputs: askStep ? L(asks.length > 1 ? 'full' : 'part', asks.length > 1 ? `${asks.length} messages from the person` : 'One message', undefined) : L('missing', 'No recorded ask', 'Start the work from a message so the request is on record.'),
     sources: tickets.length ? L('part', 'Ask names a ticket; not read') : L('part', 'Ask only; no doc or ticket', 'Name the spec, ticket or doc in the ask so criteria can be quoted from it.'),
-    transcript: L('full', `${asks.length + says.length} messages, ${tools.length} tool calls`),
+    transcript: L(asks.length + says.length > 400 || tools.length > 300 || mine.some((x) => String(x.text || '').length > 2000 || String(x.out || '').length >= 300) ? 'part' : 'full', `${asks.length + says.length} messages, ${tools.length} tool calls in the provided steps; excerpts may be clipped`),
     judged: L('missing', 'No review', 'Add a reviewer pass against the codebase and the pinned skills; record it as a verification check.'),
     measured: L(mS, mN, mS === 'missing' ? 'Run the project’s tests after the last change so the result is on record.' : undefined),
     observed: L(oS, oN, oS === 'missing' ? 'Keep tool output in the transcript; Trail attaches the deciding excerpt.' : undefined),
