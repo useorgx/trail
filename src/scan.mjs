@@ -18,11 +18,18 @@ export async function scan(o = {}) {
   todo.sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first: the view fills with recent work immediately
   const bytes = todo.reduce((a, f) => a + f.size, 0);
   const st = { files: all.length, todo: todo.length, bytes, done: 0, doneBytes: 0, streamed: 0, failures: [], t0: Date.now() };
+  // Fresh and unchanged profiles have no work. Do not create a worker whose
+  // live message port would keep the CLI open after the scan has completed.
+  if (!todo.length) {
+    saveIndex(index);
+    st.secs = (Date.now() - st.t0) / 1000;
+    return st;
+  }
   const N = Math.max(2, Math.min(8, os.cpus().length - 3));
   const workers = Array.from({ length: Math.min(N, Math.max(1, todo.length)) }, () => new Worker(WORKER));
   let qi = 0;
   await new Promise((resolve) => {
-    let live = workers.length; if (!todo.length) return resolve();
+    let live = workers.length;
     for (const w of workers) {
       const next = () => { if (qi >= todo.length) { live--; w.terminate(); if (!live) resolve(); return; } w.current = todo[qi++]; w.partial = 0; w.postMessage(w.current); };
       w.on('message', (m) => {
