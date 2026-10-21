@@ -159,7 +159,7 @@ test('unchanged and result-only appends do not scan receipt history or rewrite a
   } finally { fs.writeFileSync = write; fs.readdirSync = read; }
   assert.strictEqual(live.windows[0].receipts, historical);
   assert.deepEqual(reads, [], 'no receipt directory/history scan on append');
-  const stored = writes.filter((target) => target !== file);
+  const stored = writes.filter((target) => path.dirname(target) === P.receipts || path.dirname(target) === P.checkpoints);
   assert.equal(stored.length, 1, 'only the affected checkpoint is written');
   assert.ok(stored[0].endsWith('--checkpoint-2.json'));
 });

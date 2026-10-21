@@ -34,6 +34,10 @@ import { credential, baseUrl } from './credentials.mjs';
 
 const iso = (t, d) => { const x = Date.parse(t || d); return Number.isFinite(x) ? new Date(x).toISOString() : new Date(0).toISOString(); };
 const clampMoves = (m) => (m.length <= 400 ? m : m.slice(0, 200) + m.slice(-200));
+const outlineThreadId = (id) => {
+  if (typeof id !== 'string' || !/^T[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id.slice(1)))) throw new Error('Cannot sync an outline with an invalid stable thread identity.');
+  return id;
+};
 
 export function toSession(s, bounded) {
   return {
@@ -43,8 +47,8 @@ export function toSession(s, bounded) {
     started_at: iso(s.start), ended_at: iso(s.end, s.start),
     tool_calls: s.tools | 0, failed_calls: s.errs | 0, denied_calls: s.denied | 0,
     human_steers: s.steers?.human | 0, continues: s.steers?.cont | 0,
-    threads: s.threads.slice(0, 500).map((t, i) => ({
-      id: /^T\d{1,5}$/.test(t.id) ? t.id : `T${i + 1}`, origin: ORIGIN(t), status: STATUS[t.status] || 'unclear',
+    threads: s.threads.slice(0, 500).map((t) => ({
+      id: outlineThreadId(t.id), origin: ORIGIN(t), status: STATUS[t.status] || 'unclear',
       moves: clampMoves(t.moves.replace(/[^prchsdXD]/g, '')), backtracks: t.backs.length,
       // Only references travel: PR numbers. Commit messages and free text stay on the machine.
       claims: (t.claim || []).filter((c) => /^PR #\d{1,7}$/.test(c)).slice(0, 10),
