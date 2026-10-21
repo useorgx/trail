@@ -9,7 +9,7 @@ import { isCorrection, extractSignals } from './precedent.mjs';
 import { steps } from './steps.mjs';
 import { buildGoals } from './goals.mjs';
 import { buildReceipt, receiptIdOf } from './receipt.mjs';
-import { writeReceipts, appendSignals, loadGoverned } from './store.mjs';
+import { writeReceipts, appendSignals, loadGoverned, checkpointName, checkpointSession, reconcileCheckpoints } from './store.mjs';
 import { spanCost } from './cost.mjs';
 import { repoOf } from './workstreams.mjs';
 import { withLifecycle, SETTLE_MS } from './sync.mjs';
@@ -42,15 +42,16 @@ export class LiveSession {
   constructor(file, client, { persist = true } = {}) {
     this.file = file; this.client = client; this.persist = persist;
     this.incremental = ['claude', 'codex'].includes(client) && file.endsWith('.jsonl');
+    this.checkpointId = persist ? checkpointSession(file, client) : null;
     this.tail = this.incremental ? new ByteTail(file) : null; this.reset();
   }
-  reset(preserveParser = false) { if (!preserveParser) this.parser = {}; this.seen = 0; this.windows = []; this.positions = new WeakMap(); this.events = null; this.session = null; }
+  reset(preserveParser = false) { if (!preserveParser) this.parser = {}; this.seen = 0; this.windows = []; this.positions = new WeakMap(); this.events = null; this.session = null; this.rebuildCheckpoints = true; }
   async update() {
     let bytes = 0; let offset = 0; let session;
     if (this.tail) {
       const tail = this.tail.read(); bytes = tail.bytes; offset = tail.offset;
       if (tail.reset) this.reset();
-      if (!tail.lines.length) return { changed: false, bytes, offset, checkpoints: [] };
+      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) return { changed: false, bytes, offset, checkpoints: [] };
       session = await (this.client === 'claude' ? readClaude : readCodex)(this.file, { state: this.parser, lines: tail.lines });
     } else {
       // Mutable JSON snapshots and SQLite exports use their native reader, while keeping the same receipt pipeline.
@@ -58,6 +59,7 @@ export class LiveSession {
     }
     if (this.events && session.ev !== this.events) this.reset(true); // Codex switches representation; pending parser state survives.
     this.events = session.ev; this.session = session;
+    const previousWindowCount = this.windows.length;
     const initial = this.seen === 0;
     const affected = new Set();
     for (const event of this.parser.dirty || []) {
@@ -79,7 +81,8 @@ export class LiveSession {
     this.seen = session.ev.length;
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
-    const id = session.id || path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const fallbackId = path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const id = (!session.ev.length && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
     const checkpoints = []; let threadBase = 0; let goalBase = 0;
@@ -118,11 +121,16 @@ export class LiveSession {
         if (previousThreadCount !== undefined && previousThreadCount !== result.threads.length) {
           for (const following of this.windows.slice(this.windows.indexOf(window) + 1)) affected.add(following);
         }
-        if (this.persist) writeReceipts(`${id}--checkpoint-${window.start}`, window.receipts);
+        if (this.persist) writeReceipts(checkpointName(id, window.start), window.receipts);
         checkpoints.push(...window.receipts);
       }
       threadBase += window.result?.threads.length || 0; goalBase += window.goals?.length || 0;
     }
+    // Reconcile only after a successful rebuild or boundary change, never by scanning receipt history on appends.
+    if (this.persist && (this.rebuildCheckpoints || previousWindowCount !== this.windows.length || this.checkpointId !== id)) {
+      reconcileCheckpoints(this.file, this.client, id, this.windows.map((window) => window.start));
+    }
+    this.checkpointId = id; this.rebuildCheckpoints = false;
     return { changed: true, bytes, offset, session, checkpoints, windows: this.windows };
   }
   settled(now = Date.now(), settleMs = SETTLE_MS) {

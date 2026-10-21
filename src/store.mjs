@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { discoverOpenCode, discoverCursor, discoverCursorIDE } from './adapters-sqlite.mjs';
 import { redactDeep } from './redact.mjs';
 import { archivedOnly } from './archive.mjs';
@@ -18,6 +19,7 @@ export const P = {
   summary: path.join(HOME, 'summary.json'),
   language: path.join(HOME, 'language'),
   receipts: path.join(HOME, 'receipts'),
+  checkpoints: path.join(HOME, 'receipt-checkpoints'),
   // Judgment signals (corrections, rejections, denials, stated rules): local precedent candidates, append-only JSONL.
   signals: path.join(HOME, 'precedent-candidates.jsonl'),
   // Optional: which OrgX precedents governed a session or receipt, keyed by session id or receipt id.
@@ -54,6 +56,42 @@ export function hardenStore() {
 }
 /** Agent Work Receipts for one session's pieces of work (src/receipt.mjs), redacted like everything stored. */
 export function writeReceipts(id, receipts) { fs.mkdirSync(P.receipts, { recursive: true, mode: DIR_MODE }); writePrivate(path.join(P.receipts, id + '.json'), JSON.stringify(redactDeep(receipts).map(withIntegrity))); }
+const checkpointKey = (value) => crypto.createHash('sha256').update(value).digest('hex');
+const checkpointId = (id) => typeof id === 'string' && id.length > 0 && !/[\/\\\0]/.test(id) && id !== '.' && id !== '..';
+/** Only generated checkpoint basenames are accepted; manifests are never deletion targets. */
+export function checkpointName(id, start) {
+  if (!checkpointId(id) || !Number.isSafeInteger(start) || start < 0) throw new Error('Invalid live checkpoint identity.');
+  return `${id}--checkpoint-${start}`;
+}
+const checkpointSource = (file, client) => path.join(P.checkpoints, `source-${checkpointKey(JSON.stringify([client, path.resolve(file)]))}.json`);
+export function checkpointSession(file, client) {
+  const id = readJSON(checkpointSource(file, client), null)?.session_id;
+  return checkpointId(id) ? id : null;
+}
+const writeCheckpointState = (file, state) => {
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  try { writePrivate(temporary, JSON.stringify(state)); fs.renameSync(temporary, file); }
+  finally { try { fs.unlinkSync(temporary); } catch {} }
+};
+/** Publish a rebuilt session's active shards, retaining superseded files as local history. */
+export function reconcileCheckpoints(file, client, id, starts) {
+  const active = starts.map((start) => `${checkpointName(id, start)}.json`);
+  fs.mkdirSync(P.checkpoints, { recursive: true, mode: DIR_MODE });
+  writeCheckpointState(path.join(P.checkpoints, `session-${checkpointKey(id)}.json`), { version: 1, session_id: id, active });
+  if (checkpointSession(file, client) !== id) writeCheckpointState(checkpointSource(file, client), { session_id: id });
+}
+function activeCheckpoints() {
+  let names; try { names = fs.readdirSync(P.checkpoints); } catch { return new Map(); }
+  const active = new Map();
+  for (const name of names) {
+    if (!/^session-[a-f0-9]{64}\.json$/.test(name)) continue;
+    const state = readJSON(path.join(P.checkpoints, name), null); const id = state?.session_id;
+    if (state?.version !== 1 || !checkpointId(id) || name !== `session-${checkpointKey(id)}.json` || !Array.isArray(state.active)) continue;
+    if (state.active.some((n) => typeof n !== 'string' || !n.startsWith(`${id}--checkpoint-`) || !/--checkpoint-(0|[1-9]\d*)\.json$/.test(n))) continue;
+    active.set(id, new Set(state.active));
+  }
+  return active;
+}
 const CALIBRATION = '92–100% correct on approximately 13% of goals in the lab comparison with Codex labels; reads share Jev step tags.';
 function upgradeReceipt(receipt) {
   const extension = receipt.extensions?.['org.orgx.trail/v1'];
@@ -65,6 +103,11 @@ export const loadReceipts = (id) => readJSON(path.join(P.receipts, id + '.json')
 export const P_WORKSTREAMS = () => path.join(HOME, 'workstreams.json');
 export function allReceipts() {
   let names = []; try { names = fs.readdirSync(P.receipts); } catch { return []; }
+  const active = activeCheckpoints();
+  names = names.filter((name) => {
+    const checkpoint = name.match(/^(.*)--checkpoint-(0|[1-9]\d*)\.json$/);
+    return !checkpoint || !active.has(checkpoint[1]) || active.get(checkpoint[1]).has(name);
+  });
   // A live goal is persisted independently; a later full scan supersedes its revision by file modification time.
   const latest = new Map();
   for (const name of names.filter((f) => f.endsWith('.json')).sort((a, b) => fs.statSync(path.join(P.receipts, a)).mtimeMs - fs.statSync(path.join(P.receipts, b)).mtimeMs)) {
