@@ -169,3 +169,49 @@ test('outline transport preserves larger stable aliases and refuses unsafe IDs i
     assert.throws(() => toSession(session, false), /invalid stable thread identity/);
   }
 });
+
+test('native Cursor metadata refreshes preserve opener identities while replacement blobs get new aliases', async (t) => {
+  let sqlite; try { sqlite = await import('node:sqlite'); } catch { return t.skip('node:sqlite needs Node 22.5+'); }
+  const dir = path.join(home, 'native-cursor'); fs.mkdirSync(dir);
+  const meta = path.join(dir, 'meta.json'); const file = path.join(dir, 'store.db');
+  const metadata = (updatedAtMs) => fs.writeFileSync(meta, JSON.stringify({ createdAtMs: Date.parse(timestamp(0)), updatedAtMs, cwd: '/workspace/synthetic' }));
+  metadata(Date.parse(timestamp(10)));
+  const db = new sqlite.DatabaseSync(file); db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);');
+  const add = db.prepare('INSERT INTO blobs VALUES (?, ?)');
+  const opener = JSON.stringify({ role: 'user', content: [{ type: 'text', text: '<user_query>Implement native Cursor feature</user_query>' }] });
+  add.run('stable-user-blob', opener);
+  add.run('stable-tool-blob', JSON.stringify({ role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'cursor-test', toolName: 'run_terminal_cmd', args: { command: 'npm test' } }] }));
+  // A pre-upgrade record has only the indexed request excerpt and old synthetic session time.
+  const { readCursor } = await import('../src/adapters-sqlite.mjs');
+  const original = await readCursor(file); const legacyThreads = threadify(original); legacyThreads.threads[0].id = 'T7';
+  const st = steps(original); const goals = buildGoals(original, legacyThreads, st);
+  const legacy = buildReceipt({ ...original, client: 'cursor', id: 'native-cursor', label: 'Cursor' }, goals[0], st, legacyThreads.threads[0]);
+  ensure(); writeReceipts('native-cursor', [legacy]);
+  writeSession({ id: 'native-cursor', client: 'cursor', file, start: original.start, end: original.end, threads: legacyThreads.threads, goals });
+  metadata(Date.parse(timestamp(20)));
+  const live = new LiveSession(file, 'cursor');
+  try {
+    await live.update(); const before = receipts(live)[0];
+    assert.equal(before.receipt_id, legacy.receipt_id, 'exact legacy request evidence survives synthetic timestamp drift before upgrade');
+    metadata(Date.parse(timestamp(30))); await live.update();
+    assert.notEqual(receipts(live)[0].timestamps.started_at, before.timestamps.started_at, 'native adapter exposes its documented mutable session-level time');
+    assert.equal(receipts(live)[0].receipt_id, before.receipt_id);
+    assert.equal(receipts(live)[0].extensions[EXT].root_thread, before.extensions[EXT].root_thread);
+    const restarted = new LiveSession(file, 'cursor'); await restarted.update();
+    assert.equal(receipts(restarted)[0].receipt_id, before.receipt_id);
+    db.prepare('DELETE FROM blobs WHERE id = ?').run('stable-user-blob');
+    // Replace at the same row order, with the same words/time, but a different native message identity.
+    db.prepare('UPDATE blobs SET id = ?, data = ? WHERE id = ?').run('replacement-user-blob', opener, 'stable-tool-blob');
+    await live.update(); assert.notEqual(receipts(live)[0].receipt_id, before.receipt_id);
+  } finally { db.close(); }
+});
+
+test('partial reset followed by a larger replacement cannot hide the source generation change', async () => {
+  const initial = goal('identical replacement opening'); const file = source('partial-generation', initial);
+  const live = new LiveSession(file, 'claude'); await live.update(); const old = receipts(live)[0].receipt_id;
+  fs.writeFileSync(file, initial.slice(0, 20)); assert.equal((await live.update()).changed, false);
+  assert.ok(allReceipts().some((receipt) => receipt.receipt_id === old), 'incomplete replacement leaves old ledger evidence eligible');
+  fs.appendFileSync(file, initial.slice(20) + row('assistant', 'Longer replacement response. '.repeat(100), 12));
+  await live.update();
+  assert.notEqual(receipts(live)[0].receipt_id, old, 'the already observed truncation remains a real reset despite later size growth');
+});

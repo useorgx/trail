@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -11,6 +12,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'trail-thread-identities-'));
 process.env.TRAIL_HOME = home; process.env.TRAIL_NO_KEYCHAIN = '1';
 const { assignThreadIdentities } = await import('../src/identity.mjs');
 const { P } = await import('../src/store.mjs');
+const { archive, archivePathFor } = await import('../src/archive.mjs');
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 const stamp = '2026-10-01T00:00:00Z';
 const ask = (text) => ({ k: 'ask', ts: stamp, who: 'human', text });
@@ -24,7 +26,7 @@ function fixture(id, events, client = 'claude') {
 const allocate = async (input, threads) => assignThreadIdentities({ ...input, threads });
 const output = (result) => [...result.ids];
 const childScript = `const {assignThreadIdentities}=await import(${JSON.stringify(new URL('../src/identity.mjs', import.meta.url).href)}); const r=await assignThreadIdentities(JSON.parse(process.argv[1])); console.log(JSON.stringify({ids:[...r.ids],conflicts:r.conflicts}));`;
-const child = async (input) => JSON.parse((await promisify(execFile)(process.execPath, ['--input-type=module', '-e', childScript, JSON.stringify(input)], { env: process.env, encoding: 'utf8' })).stdout);
+const child = async (input, env = process.env) => JSON.parse((await promisify(execFile)(process.execPath, ['--input-type=module', '-e', childScript, JSON.stringify(input)], { env, encoding: 'utf8' })).stdout);
 const registryFile = (input) => path.join(home, 'thread-identities', crypto.createHash('sha256').update(JSON.stringify([input.client, input.id])).digest('hex') + '.json');
 const ownReceipts = (id, documents) => { fs.mkdirSync(P.receipts, { recursive: true }); fs.writeFileSync(path.join(P.receipts, id + '.json'), JSON.stringify(documents)); };
 const oldReceipt = (input, alias, at, text = input.events[at].text) => ({
@@ -59,6 +61,68 @@ test('fresh batch and differently chunked live captures choose the same source-i
   assert.deepEqual(output(chunked), output(once));
   const offset = await assignThreadIdentities({ ...live, threads: [thread('T1', 0)], offset: 3 });
   assert.equal(offset.ids.get('T1'), once.ids.get('T3'), 'window-local opening indices resolve through the shared global event');
+});
+
+test('native source tokens survive materialization, mutable fields, relocation and fresh-store discovery order', async () => {
+  for (const prefix of ['cursor-blob:', 'cursor-ide-bubble:', 'opencode-part:', 'copilot-request:', 'copilot-tool:']) {
+    const kind = prefix.endsWith('tool:') ? 'tool' : 'ask';
+    const event = { ...(kind === 'tool' ? tool('old command input') : ask('Native opener before materialization')), source_id: prefix + 'immutable-record' };
+    const input = fixture('native-' + prefix.replace(/[^a-z]/g, ''), [event], 'copilot');
+    const original = (await allocate(input, [thread('T1', 0)])).ids.get('T1');
+    const moved = { ...event, ts: '2026-10-02T12:00:00Z', text: 'Updated native text', target: 'updated command input', pending: false, err: true };
+    const materialized = { ...input, events: [ask('Newly materialized preceding text'), tool('new preceding tool'), moved] };
+    assert.equal((await allocate(materialized, [thread('T3', 2)])).ids.get('T3'), original);
+    const relocated = input.file + '.copy'; fs.copyFileSync(input.file, relocated);
+    assert.equal((await allocate({ ...materialized, file: relocated }, [thread('T4', 2)])).ids.get('T4'), original, 'native ownership is independent of storage path');
+    const freshHome = path.join(home, 'fresh-' + prefix.replace(/[^a-z]/g, '')); fs.mkdirSync(freshHome);
+    const freshResult = await child({ ...materialized, file: relocated, threads: [thread('T5', 2)] }, { ...process.env, TRAIL_HOME: freshHome });
+    assert.equal(freshResult.ids[0][1], original, 'new native defaults do not depend on normalized index or capture order');
+    moved.source_id += '-different-record';
+    assert.notEqual((await allocate(materialized, [thread('T3', 2)])).ids.get('T3'), original);
+    moved.source_id = event.source_id; moved.k = kind === 'ask' ? 'tool' : 'ask';
+    assert.notEqual((await allocate(materialized, [thread('T3', 2)])).ids.get('T3'), original, 'record kinds occupy separate native namespaces');
+  }
+});
+
+test('managed raw/archive/restore transport preserves identities while logical archive resets and raw rotations do not', async () => {
+  const previousRoot = process.env.TRAIL_CLAUDE_PROJECTS; process.env.TRAIL_CLAUDE_PROJECTS = path.join(home, 'synthetic-archive-root');
+  try {
+    const root = process.env.TRAIL_CLAUDE_PROJECTS; fs.mkdirSync(path.join(root, 'project'), { recursive: true });
+    const file = path.join(root, 'project', 'archived-session.jsonl'); const bytes = 'synthetic archived transcript\n'.repeat(25); fs.writeFileSync(file, bytes);
+    const input = { file, client: 'claude', id: 'archived-session', events: [ask('Archived source opener')] };
+    const original = (await allocate(input, [thread('T1', 0)])).ids.get('T1');
+    await archive({ clients: ['claude'] }); const archived = archivePathFor('claude', file); fs.rmSync(file);
+    const archivedInput = { ...input, file: archived };
+    assert.equal((await allocate(archivedInput, [thread('T1', 0)])).ids.get('T1'), original);
+    assert.equal((await child({ ...archivedInput, threads: [thread('T1', 0)] })).ids[0][1], original);
+    fs.writeFileSync(archived, zlib.gzipSync(bytes + 'appended archived transcript\n'));
+    assert.equal((await allocate(archivedInput, [thread('T1', 0)])).ids.get('T1'), original, 'archived prefix continuation retains its generation');
+    fs.writeFileSync(file, zlib.gunzipSync(fs.readFileSync(archived))); fs.appendFileSync(file, 'new raw append after restore\n');
+    assert.equal((await allocate(input, [thread('T1', 0)])).ids.get('T1'), original, 'an exact archived prefix supports raw restore followed by appends');
+    const rotated = file + '.rotated'; fs.writeFileSync(rotated, bytes); fs.renameSync(rotated, file);
+    const rawReplacement = (await allocate(input, [thread('T1', 0)])).ids.get('T1'); assert.notEqual(rawReplacement, original, 'ordinary raw inode replacement retains reset safety');
+    await archive({ clients: ['claude'] }); fs.rmSync(file);
+    await allocate(archivedInput, [thread('T1', 0)]);
+    fs.writeFileSync(archived, zlib.gzipSync('')); await allocate({ ...archivedInput, events: [] }, []);
+    fs.writeFileSync(archived, zlib.gzipSync(bytes));
+    const afterEmpty = (await allocate(archivedInput, [thread('T1', 0)])).ids.get('T1'); assert.notEqual(afterEmpty, rawReplacement, 'an observed empty archive resets fallback ownership');
+    fs.writeFileSync(archived, zlib.gzipSync(bytes.replace('synthetic', 'different')));
+    assert.notEqual((await allocate(archivedInput, [thread('T1', 0)])).ids.get('T1'), afterEmpty, 'non-prefix archived replacement cannot reuse a fallback alias');
+  } finally {
+    if (previousRoot === undefined) delete process.env.TRAIL_CLAUDE_PROJECTS; else process.env.TRAIL_CLAUDE_PROJECTS = previousRoot;
+  }
+});
+
+test('empty observations retain the last complete representation while recording fallback reset epochs', async () => {
+  const input = fixture('empty-representation', [ask('Repeated Codex fallback opener')], 'codex');
+  const original = (await assignThreadIdentities({ ...input, threads: [thread('T1', 0)], representation: 'raw' })).ids.get('T1');
+  fs.writeFileSync(input.file, ''); await allocate({ ...input, events: [] }, []);
+  fs.appendFileSync(input.file, 'replacement\n'.repeat(100));
+  const replaced = (await assignThreadIdentities({ ...input, threads: [thread('T1', 0)], representation: 'raw' })).ids.get('T1');
+  assert.notEqual(replaced, original);
+  const sources = fs.readdirSync(path.dirname(registryFile(input))).filter((name) => name.startsWith(path.basename(registryFile(input), '.json')) && name.endsWith('.source.json'));
+  const state = JSON.parse(fs.readFileSync(path.join(path.dirname(registryFile(input)), sources[0]), 'utf8'));
+  assert.equal(state.representation, 'raw'); assert.equal(state.generation, 1, 'empty observations do not invent an additional representation epoch');
 });
 
 test('physical rotation and observed empty truncation allocate disjoint source generations', async () => {
@@ -141,6 +205,40 @@ test('legacy evidence mismatch only reserves an unused ID and never guesses by t
   fs.writeFileSync(path.join(P.sessions, input.id + '.json'), JSON.stringify({ id: input.id, client: input.client, threads: [{ id: 'T10', t0: stamp, ask: 'Old unrelated source ask', title: input.events[0].text, spans: [[0, 0]] }] }));
   const result = await allocate(input, [thread('T1', 0)]);
   assert.deepEqual(result.conflicts, []); assert.notEqual(result.ids.get('T1'), 'T10');
+});
+
+test('legacy Cursor requests retain aliases across synthetic metadata time updates with exact indexed evidence', async () => {
+  const input = fixture('cursor-legacy-time', [{ ...ask('Exact historical Cursor request'), source_id: 'cursor-blob:legacy-part' }], 'cursor');
+  ownReceipts(input.id, [oldReceipt(input, 'T7', 0)]); input.events[0].ts = '2026-10-03T00:00:00Z';
+  assert.equal((await allocate(input, [thread('T1', 0)])).ids.get('T1'), 'T7');
+  const otherClient = fixture('cursor-ide-legacy-time', [{ ...ask('Other client timestamp remains authoritative'), source_id: 'cursor-ide-bubble:legacy-part' }], 'cursor-ide');
+  ownReceipts(otherClient.id, [oldReceipt(otherClient, 'T7', 0)]); otherClient.events[0].ts = '2026-10-03T00:00:00Z';
+  assert.notEqual((await allocate(otherClient, [thread('T1', 0)])).ids.get('T1'), 'T7');
+  const ambiguous = fixture('cursor-legacy-time-conflict', [{ ...ask('One exact Cursor request with incompatible old aliases'), source_id: 'cursor-blob:ambiguous-part' }], 'cursor');
+  ownReceipts(ambiguous.id, [oldReceipt(ambiguous, 'T2', 0), oldReceipt(ambiguous, 'T3', 0)]); ambiguous.events[0].ts = '2026-10-03T00:00:00Z';
+  const refused = await allocate(ambiguous, [thread('T1', 0)]);
+  assert.equal(refused.ids.size, 0); assert.equal(refused.conflicts[0].kind, 'legacy_alias_conflict');
+});
+
+test('non-ask legacy spans never bind by shared timestamp or inferred title; exact native evidence can relocate', async () => {
+  fs.mkdirSync(P.sessions, { recursive: true });
+  const unproven = fixture('nonask-legacy-unproven', [ask('Earlier source ask'), { ...tool('new unrelated native command'), source_id: 'cursor-ide-bubble:new-tool' }], 'cursor-ide');
+  fs.writeFileSync(path.join(P.sessions, unproven.id + '.json'), JSON.stringify({ id: unproven.id, client: unproven.client, threads: [{ id: 'T2', t0: stamp, title: 'new unrelated native command', spans: [[1, 1]] }] }));
+  assert.notEqual((await allocate(unproven, [thread('T1', 1)])).ids.get('T1'), 'T2');
+  const proven = fixture('nonask-legacy-proven', [ask('Materialized earlier text'), { ...tool('updated native command'), ts: '2026-10-04T00:00:00Z', source_id: 'cursor-ide-bubble:known-tool' }], 'cursor-ide');
+  fs.writeFileSync(path.join(P.sessions, proven.id + '.json'), JSON.stringify({ id: proven.id, client: proven.client, threads: [{ id: 'T8', t0: stamp, source_id: 'cursor-ide-bubble:known-tool', spans: [[0, 0]] }] }));
+  assert.equal((await allocate(proven, [thread('T1', 1)])).ids.get('T1'), 'T8');
+});
+
+test('a native preferred alias collision is a durable refusal instead of a reordered identity', async () => {
+  const input = fixture('native-alias-collision', [{ ...ask('Historical native request'), source_id: 'copilot-request:old' }, { ...ask('New native request'), source_id: 'copilot-request:new' }], 'copilot');
+  const hash = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const opening = hash(['native', input.events[1].k, input.events[1].source_id]);
+  const occupied = 'T' + (Number.parseInt(hash(['native-alias', input.client, input.id, opening]).slice(0, 13), 16) + 1);
+  ownReceipts(input.id, [oldReceipt(input, occupied, 0)]);
+  const refused = await allocate(input, [thread('T1', 0), thread('T2', 1)]);
+  assert.equal(refused.ids.size, 0); assert.deepEqual(refused.conflicts, [{ kind: 'native_alias_collision', at: 1, aliases: [occupied] }]);
+  assert.deepEqual((await child({ ...input, threads: [thread('T1', 0), thread('T2', 1)] })).conflicts, refused.conflicts);
 });
 
 test('annotation-only historical targets are reserved without altering labels, reviews or precedents', async () => {

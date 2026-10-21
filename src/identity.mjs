@@ -2,12 +2,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { HOME, P } from './store.mjs';
 import { withProcessLock } from './process-lock.mjs';
 import { redactDeep } from './redact.mjs';
+import { ARCHIVE, ROOTS } from './archive.mjs';
 
 const ROOT = path.join(HOME, 'thread-identities');
 const hash = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const NATIVE_PREFIX = `${hash('native-source-events')}:0:`;
+const nativeOpening = (event) => typeof event?.source_id === 'string' && event.source_id.length > 0;
+const bindingKey = (prefix, candidate) => (candidate.native ? NATIVE_PREFIX : prefix) + candidate.digest;
 // Older uploads accepted zero and leading zeroes. Preserve those exact aliases; new allocations stay positive.
 const aliasNumber = (value) => typeof value === 'string' && /^T\d+$/.test(value) && Number.isSafeInteger(Number(value.slice(1))) ? Number(value.slice(1)) : null;
 const safeId = (id) => typeof id === 'string' && id.length > 0 && !/[\/\\\0]/.test(id) && id !== '.' && id !== '..';
@@ -35,19 +40,60 @@ function validate(state, client, id) {
 }
 /** Only fields fixed at invocation/message creation participate; outputs and inferred classifications do not. */
 function opening(event, at) {
+  // Native records survive late materialization/reordering and updates to synthetic event timestamps or text.
+  if (nativeOpening(event)) return hash(['native', event.k, event.source_id]);
   return hash([at, ...['k', 'ts', 'who', 'text', 'tool', 'rawTool', 'target'].map((key) => event[key] ?? null)]);
 }
-function sourceStat(file, client, representation) {
-  // SQLite readers address a conversation as <database>#<session>; its file is the database itself.
-  const split = file.lastIndexOf('#');
-  const physical = ['opencode', 'cursor-ide'].includes(client) && split >= 0 ? file.slice(0, split) : file;
-  const s = fs.statSync(physical);
-  return { identity: `${s.dev}:${s.ino}`, size: s.size, mtime: s.mtimeMs, representation };
+function logicalSource(file, client) {
+  const resolved = path.resolve(file); const root = ROOTS[client];
+  if (root) {
+    const relative = path.relative(path.join(ARCHIVE, client), resolved);
+    if (relative.endsWith('.jsonl.gz') && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+      return { file: resolved, logical: path.resolve(root(), relative.slice(0, -3)), archived: true };
+    }
+  }
+  return { file, logical: resolved, archived: false };
 }
-function generation(previous, current, appendOnly) {
+async function contentHash(file, { gzip = false, length, prefixLength } = {}) {
+  const digest = crypto.createHash('sha256'); const prefix = crypto.createHash('sha256'); let bytes = 0;
+  if (length !== 0) {
+    const input = fs.createReadStream(file, length === undefined ? {} : { start: 0, end: length - 1 });
+    const stream = gzip ? input.pipe(zlib.createGunzip()) : input;
+    if (gzip) input.on('error', (error) => stream.destroy(error));
+    for await (const chunk of stream) {
+      if (prefixLength !== undefined && bytes < prefixLength) prefix.update(chunk.subarray(0, prefixLength - bytes));
+      bytes += chunk.length; digest.update(chunk);
+    }
+  }
+  return { content_hash: digest.digest('hex'), content_size: bytes, ...(prefixLength !== undefined && bytes >= prefixLength ? { prefix_hash: prefix.digest('hex') } : {}) };
+}
+async function sourceStat(source, client, representation, previous) {
+  // SQLite readers address a conversation as <database>#<session>; its file is the database itself.
+  const split = source.file.lastIndexOf('#');
+  const physical = ['opencode', 'cursor-ide'].includes(client) && split >= 0 ? source.file.slice(0, split) : source.file;
+  const s = fs.statSync(physical);
+  const current = { identity: `${s.dev}:${s.ino}`, size: s.size, mtime: s.mtimeMs, representation };
+  if (source.archived) {
+    const sameArchive = previous?.transport === 'archive' && previous.identity === current.identity && previous.size === current.size && previous.mtime === current.mtime;
+    const content = sameArchive && /^[a-f0-9]{64}$/.test(previous.content_hash) && Number.isSafeInteger(previous.content_size) && previous.content_size >= 0
+      ? { content_hash: previous.content_hash, content_size: previous.content_size } : await contentHash(physical, { gzip: true, ...(previous?.transport === 'archive' ? { prefixLength: previous.content_size } : {}) });
+    const { prefix_hash, ...stored } = content;
+    const continued = previous?.transport === 'archive' && content.content_size >= previous.content_size && (content.content_hash === previous.content_hash || prefix_hash === previous.content_hash);
+    return { current: { ...current, transport: 'archive', ...stored }, restored: false, continued };
+  }
+  let restored = false;
+  if (previous?.transport === 'archive' && /^[a-f0-9]{64}$/.test(previous.content_hash) && Number.isSafeInteger(previous.content_size) && previous.content_size >= 0 && current.size >= previous.content_size) {
+    const prefix = await contentHash(physical, { length: previous.content_size });
+    restored = prefix.content_size === previous.content_size && prefix.content_hash === previous.content_hash;
+  }
+  return { current, restored };
+}
+function generation(previous, current, appendOnly, restored, continued) {
   if (!previous) return 0;
   if (!Number.isSafeInteger(previous.generation) || previous.generation < 0 || typeof previous.identity !== 'string' || typeof previous.representation !== 'string') throw new Error('Invalid source generation; existing thread aliases were left untouched.');
-  const replaced = previous.representation !== current.representation || (appendOnly && (previous.identity !== current.identity || current.size < previous.size || (current.size === previous.size && current.mtime !== previous.mtime)));
+  const archivedReset = current.transport === 'archive' && (previous.transport === 'archive' ? !continued : current.content_size < previous.size || (current.content_size === previous.size && Math.abs(current.mtime - previous.mtime) > 1));
+  const rawReset = current.transport !== 'archive' && !restored && (previous.transport === 'archive' || previous.identity !== current.identity || current.size < previous.size || (current.size === previous.size && current.mtime !== previous.mtime));
+  const replaced = previous.representation !== current.representation || (appendOnly && (archivedReset || rawReset));
   return previous.generation + Number(replaced);
 }
 const sameTime = (a, b) => Number.isFinite(Date.parse(a)) && Date.parse(a) === Date.parse(b);
@@ -58,12 +104,16 @@ function legacy(client, id, events) {
   const reserved = new Set(); const candidates = [];
   if (!safeId(id)) return { reserved, candidates };
   const reserve = (alias) => { if (aliasNumber(alias) !== null) reserved.add(alias); };
-  const add = (alias, at, observed, excerpt, limit) => {
+  const add = (alias, at, observed, excerpt, limit, exactNative = false) => {
     reserve(alias); const event = events[at];
-    if (aliasNumber(alias) === null || !Number.isSafeInteger(at) || at < 0 || !event || !sameTime(event.ts, observed)) return;
+    if (aliasNumber(alias) === null || !Number.isSafeInteger(at) || at < 0 || !event) return;
     // Receipt request evidence records the source ask, never an inferred title.
-    if (excerpt !== undefined && (event.k !== 'ask' || normalized(redactDeep(limit ? normalized(event.text)?.slice(0, limit) : event.text)) !== normalized(excerpt))) return;
-    candidates.push({ alias, at, digest: opening(event, at) });
+    const exactRequest = excerpt !== undefined && event.k === 'ask' && normalized(redactDeep(limit ? normalized(event.text)?.slice(0, limit) : event.text)) === normalized(excerpt);
+    if (excerpt !== undefined && !exactRequest) return;
+    // Cursor agent assigns the conversation's mutable updatedAt to every blob part, including old requests.
+    const cursorSyntheticTime = client === 'cursor' && typeof event.source_id === 'string' && event.source_id.startsWith('cursor-blob:') && exactRequest;
+    if (!sameTime(event.ts, observed) && !cursorSyntheticTime && !exactNative) return;
+    candidates.push({ alias, at, native: nativeOpening(event), digest: opening(event, at) });
   };
   const readLegacy = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
   const receiptPrefix = `trail:${client}:${id}:`;
@@ -81,10 +131,17 @@ function legacy(client, id, events) {
   for (const reference of Object.keys(readLegacy(path.join(HOME, 'taxonomy.json'), {})?.overrides || {})) reserveReceipt(reference);
   const saved = readLegacy(path.join(P.sessions, `${id}.json`), null);
   if (saved?.id === id && saved.client === client) {
+    const nativeAt = new Map();
+    if ((saved.threads || []).some((thread) => typeof thread.source_id === 'string' && thread.source_id.length)) events.forEach((event, at) => {
+      if (!nativeOpening(event)) return;
+      if (!nativeAt.has(event.source_id)) nativeAt.set(event.source_id, []); nativeAt.get(event.source_id).push(at);
+    });
     for (const thread of saved.threads || []) {
       reserve(thread.id);
       const at = Array.isArray(thread.spans?.[0]) ? thread.spans[0][0] : thread.at;
-      if (events[at]?.k !== 'ask' || typeof thread.ask === 'string') add(thread.id, at, thread.t0, events[at]?.k === 'ask' ? thread.ask : undefined, 300);
+      const native = nativeAt.get(thread.source_id);
+      if (native?.length) for (const index of native) add(thread.id, index, thread.t0, undefined, undefined, true);
+      else if (events[at]?.k === 'ask' && typeof thread.ask === 'string') add(thread.id, at, thread.t0, thread.ask, 300);
     }
     for (const goal of saved.goals || []) { reserve(goal.root); for (const alias of goal.threads || []) reserve(alias); }
   }
@@ -115,15 +172,15 @@ function legacy(client, id, events) {
 function migrate(state, client, id, events, prefix) {
   const old = legacy(client, id, events); const byAlias = new Map(); const byOpening = new Map();
   for (const candidate of old.candidates) {
-    const key = prefix + candidate.digest;
+    const key = bindingKey(prefix, candidate);
     if (!byAlias.has(candidate.alias)) byAlias.set(candidate.alias, new Set()); byAlias.get(candidate.alias).add(key);
     if (!byOpening.has(key)) byOpening.set(key, new Set()); byOpening.get(key).add(candidate.alias);
   }
   const conflicts = [];
-  for (const [key, aliases] of byOpening) if (aliases.size > 1) conflicts.push({ kind: 'legacy_alias_conflict', at: old.candidates.find((c) => prefix + c.digest === key).at, aliases: [...aliases].sort() });
+  for (const [key, aliases] of byOpening) if (aliases.size > 1) conflicts.push({ kind: 'legacy_alias_conflict', at: old.candidates.find((c) => bindingKey(prefix, c) === key).at, aliases: [...aliases].sort() });
   for (const [alias, keys] of byAlias) if (keys.size > 1) conflicts.push({ kind: 'legacy_source_conflict', aliases: [alias], indices: old.candidates.filter((c) => c.alias === alias).map((c) => c.at).filter((at, i, xs) => xs.indexOf(at) === i).sort((a, b) => a - b) });
   for (const candidate of old.candidates) {
-    const key = prefix + candidate.digest;
+    const key = bindingKey(prefix, candidate);
     if (byAlias.get(candidate.alias).size === 1 && byOpening.get(key).size === 1) state.bindings[key] = candidate.alias;
   }
   state.reserved = [...old.reserved]; state.next = Math.max(state.next, ...[...old.reserved].map((alias) => aliasNumber(alias) + 1));
@@ -137,12 +194,12 @@ function migrate(state, client, id, events, prefix) {
  */
 export async function assignThreadIdentities({ file, client, id, events, threads, offset = 0, persist = true, representation = client }) {
   if (typeof file !== 'string' || typeof client !== 'string' || typeof id !== 'string' || !id || !Array.isArray(events) || !Array.isArray(threads) || !Number.isSafeInteger(offset) || offset < 0 || typeof representation !== 'string') throw new Error('Invalid stable thread identity input.');
-  const session = hash([client, id]); const source = hash(path.resolve(file));
+  const session = hash([client, id]); const location = logicalSource(file, client); const source = hash(location.logical);
   const registry = path.join(ROOT, `${session}.json`); const sourceFile = path.join(ROOT, `${session}-${source}.source.json`);
   const candidates = threads.map((thread) => {
     const at = thread.at + offset; const event = events[at];
     if (aliasNumber(thread.id) === null || !Number.isSafeInteger(at) || at < 0 || !object(event)) throw new Error('Thread identity requires an exact opening event.');
-    return { local: thread.id, at, digest: opening(event, at) };
+    return { local: thread.id, at, native: nativeOpening(event), digest: opening(event, at) };
   });
   const apply = async () => {
     let state; let holder; let before;
@@ -154,7 +211,9 @@ export async function assignThreadIdentities({ file, client, id, events, threads
       holder = ephemeral.get(session); if (!holder) { holder = { state: fresh(client, id), sources: new Map() }; ephemeral.set(session, holder); } state = holder.state;
     }
     const previous = persist ? readJSON(sourceFile, null) : holder.sources.get(source);
-    const current = sourceStat(file, client, representation); const epoch = generation(previous, current, ['claude', 'codex'].includes(client) && file.endsWith('.jsonl'));
+    const observedRepresentation = !events.length && !threads.length && previous?.representation ? previous.representation : representation;
+    const { current, restored, continued } = await sourceStat(location, client, observedRepresentation, previous);
+    const epoch = generation(previous, current, ['claude', 'codex', 'droid'].includes(client) && location.logical.endsWith('.jsonl'), restored, continued);
     const prefix = `${source}:${epoch}:`; let dirty = false;
     const initialMigration = !state.migrated;
     if (!state.migrated) { if (persist) migrate(state, client, id, events, prefix); else state.migrated = true; dirty = true; }
@@ -172,12 +231,16 @@ export async function assignThreadIdentities({ file, client, id, events, threads
     }
     const ids = new Map(); const reserved = new Set(state.reserved);
     if (!state.conflicts.length) for (const candidate of candidates) {
-      const key = prefix + candidate.digest; let alias = state.bindings[key];
+      const key = bindingKey(prefix, candidate); let alias = state.bindings[key];
       if (!alias) {
-        const preferred = base + candidate.at + 1;
+        const preferred = candidate.native ? Number.parseInt(hash(['native-alias', client, id, candidate.digest]).slice(0, 13), 16) + 1 : base + candidate.at + 1;
         if (!Number.isSafeInteger(preferred + 1)) throw new Error('Stable thread alias space exhausted.');
         alias = `T${preferred}`;
         if (reserved.has(alias)) {
+          if (candidate.native) {
+            state.conflicts.push({ kind: 'native_alias_collision', at: candidate.at, aliases: [alias] });
+            dirty = true; ids.clear(); break;
+          }
           while (reserved.has(`T${state.next}`)) state.next++;
           if (!Number.isSafeInteger(state.next + 1)) throw new Error('Stable thread alias space exhausted.');
           alias = `T${state.next++}`;

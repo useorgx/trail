@@ -19,6 +19,7 @@ const materialFingerprint = (receipt) => {
   const key = 'org.orgx.trail/v1'; const { lifecycle, ...extension } = receipt.extensions?.[key] || {};
   return receiptFingerprint({ ...receipt, extensions: { ...receipt.extensions, [key]: extension } });
 };
+const fileSessionId = (file) => path.basename(file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
 
 export class ByteTail {
   constructor(file) { this.file = file; this.reset(); }
@@ -52,11 +53,22 @@ export class LiveSession {
     if (this.tail) {
       const tail = this.tail.read(); bytes = tail.bytes; offset = tail.offset;
       if (tail.reset) this.reset();
-      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) return { changed: false, bytes, offset, checkpoints: [] };
+      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) {
+        if (this.rebuildCheckpoints && offset > 0) {
+          // Record a known reset even while waiting for its first complete replacement record.
+          const id = this.checkpointId || fileSessionId(this.file);
+          const identity = await assignThreadIdentities({ file: this.file, client: this.client, id, events: [], threads: [], persist: this.persist });
+          if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
+        }
+        return { changed: false, bytes, offset, checkpoints: [] };
+      }
       session = await (this.client === 'claude' ? readClaude : readCodex)(this.file, { state: this.parser, lines: tail.lines });
     } else {
       // Mutable JSON snapshots and SQLite exports use their native reader, while keeping the same receipt pipeline.
-      session = await readSession(this.file, this.client); this.reset();
+      session = await readSession(this.file, this.client);
+      // A missing native reader provides no evidence that prior goals disappeared.
+      if (session.available === false) return { changed: false, bytes, offset, checkpoints: [] };
+      this.reset();
     }
     if (this.events && session.ev !== this.events) this.reset(true); // Codex switches representation; pending parser state survives.
     this.events = session.ev; this.session = session;
@@ -82,8 +94,8 @@ export class LiveSession {
     this.seen = session.ev.length;
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
-    const fallbackId = path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
-    const id = (!session.ev.length && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
+    const fallbackId = fileSessionId(this.file);
+    const id = (!session.ev.length && this.file.endsWith('.jsonl') && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
     const checkpoints = []; let goalBase = 0;
@@ -99,7 +111,7 @@ export class LiveSession {
         const st = steps(slice, lang); const result = threadify(slice);
         const identity = await assignThreadIdentities({ file: this.file, client: this.client, id, events: session.ev, threads: result.threads, offset: window.start, persist: this.persist, representation: session.format || this.client });
         if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
-        for (const t of result.threads) { t.id = identity.ids.get(t.id); t.home = identity.ids.get(t.home); t.parent = identity.ids.get(t.parent); t.at += window.start; }
+        for (const t of result.threads) { t.id = identity.ids.get(t.id); t.home = identity.ids.get(t.home); t.parent = identity.ids.get(t.parent); t.at += window.start; t.source_id = session.ev[t.at]?.source_id; }
         const localGoals = buildGoals(slice, result, st);
         for (const t of result.threads) { t.spans = (t.spans || []).map(([a, b]) => [a + window.start, b + window.start]); t.backs = (t.backs || []).map((back) => ({ ...back, i: back.i + window.start })); }
         for (const step of st) step.at += window.start;
