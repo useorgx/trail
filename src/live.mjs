@@ -55,7 +55,10 @@ export class LiveSession {
       session = await (this.client === 'claude' ? readClaude : readCodex)(this.file, { state: this.parser, lines: tail.lines });
     } else {
       // Mutable JSON snapshots and SQLite exports use their native reader, while keeping the same receipt pipeline.
-      session = await readSession(this.file, this.client); this.reset();
+      session = await readSession(this.file, this.client);
+      // A missing native reader provides no evidence that prior goals disappeared.
+      if (session.available === false) return { changed: false, bytes, offset, checkpoints: [] };
+      this.reset();
     }
     if (this.events && session.ev !== this.events) this.reset(true); // Codex switches representation; pending parser state survives.
     this.events = session.ev; this.session = session;
@@ -82,7 +85,7 @@ export class LiveSession {
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
     const fallbackId = path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
-    const id = (!session.ev.length && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
+    const id = (!session.ev.length && !['opencode', 'cursor-ide'].includes(this.client) && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
     const checkpoints = []; let threadBase = 0; let goalBase = 0;
