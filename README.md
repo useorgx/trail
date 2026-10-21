@@ -189,3 +189,12 @@ Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDay
 Everything lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.
 
 Built by [OrgX](https://useorgx.com).
+
+## About OrgX
+
+[OrgX](https://useorgx.com) is proof for AI-delivered work — the operating record your agents and tools share. Agents in ChatGPT, Claude, Cursor, and Codex work from one record of decisions, approvals, and work receipts.
+
+- [OrgX FAQ](https://useorgx.com/faq): what it is, who it's for, and what it costs
+- [Agent work receipts](https://useorgx.com/agent-work-receipts): how finished agent work is checked and signed off
+- [Pricing](https://useorgx.com/pricing)
+- Hosted MCP server: [useorgx/orgx-mcp](https://github.com/useorgx/orgx-mcp)
