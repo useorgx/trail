@@ -95,7 +95,7 @@ export class LiveSession {
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
     const fallbackId = fileSessionId(this.file);
-    const id = (!session.ev.length && this.file.endsWith('.jsonl') && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
+    const id = (!session.ev.length && !['opencode', 'cursor-ide'].includes(this.client) && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
     const checkpoints = []; let goalBase = 0;
