@@ -163,3 +163,42 @@ test('unchanged and result-only appends do not scan receipt history or rewrite a
   assert.equal(stored.length, 1, 'only the affected checkpoint is written');
   assert.ok(stored[0].endsWith('--checkpoint-2.json'));
 });
+
+test('a new goal retains the unchanged prior receipt and persists only its own checkpoint', async () => {
+  const id = 'unchanged-boundary'; const file = source(id, goal('completed cached feature'));
+  const live = new LiveSession(file, 'claude'); await live.update();
+  const prior = live.windows[0].receipts; const priorActivity = live.windows[0].activityAt;
+  const saved = path.join(P.receipts, `${id}--checkpoint-0.json`); const original = fs.readFileSync(saved, 'utf8');
+  const writes = []; const write = fs.writeFileSync;
+  fs.appendFileSync(file, goal('new independent feature'));
+  fs.writeFileSync = (target, ...args) => { writes.push(String(target)); return write(target, ...args); };
+  let updated;
+  try { updated = await live.update(); } finally { fs.writeFileSync = write; }
+  assert.strictEqual(live.windows[0].receipts, prior);
+  assert.equal(live.windows[0].activityAt, priorActivity);
+  assert.equal(fs.readFileSync(saved, 'utf8'), original);
+  assert.deepEqual(updated.checkpoints.map((receipt) => receipt.intent.summary), ['Implement new independent feature']);
+  assert.deepEqual(writes.filter((target) => path.dirname(target) === P.receipts), [path.join(P.receipts, `${id}--checkpoint-2.json`)]);
+  assert.equal(own(id).length, 2, 'both goals remain eligible in the ledger');
+});
+
+test('a failed older receipt write retries all affected windows without needing another source append', async () => {
+  const id = 'retry-material-write'; const file = source(id, row('user', 'Implement a retryable feature') + row('assistant', [{ type: 'tool_use', id: 'retry-call', name: 'Bash', input: { command: 'npm test' } }]));
+  const live = new LiveSession(file, 'claude'); await live.update();
+  const prior = live.windows[0].receipts;
+  const stored = path.join(P.receipts, `${id}--checkpoint-0.json`); const original = fs.readFileSync(stored, 'utf8');
+  const manifest = fs.readdirSync(P.checkpoints).find((name) => name.startsWith('session-') && JSON.parse(fs.readFileSync(path.join(P.checkpoints, name), 'utf8')).session_id === id);
+  const active = fs.readFileSync(path.join(P.checkpoints, manifest), 'utf8');
+  fs.appendFileSync(file, row('user', [{ type: 'tool_result', tool_use_id: 'retry-call', content: '8 passed' }]) + goal('following goal after a failed older write'));
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (target, ...args) => { if (String(target) === stored) throw new Error('synthetic changed receipt write failure'); return write(target, ...args); };
+  try { await assert.rejects(live.update(), /synthetic changed receipt write failure/); } finally { fs.writeFileSync = write; }
+  assert.equal(live.windows.length, 0, 'failed output invalidates capture caches instead of marking the write successful');
+  assert.equal(fs.readFileSync(stored, 'utf8'), original);
+  assert.equal(fs.readFileSync(path.join(P.checkpoints, manifest), 'utf8'), active, 'the prior active set remains published until the complete rebuild succeeds');
+  const retried = await live.update();
+  assert.equal(retried.checkpoints.length, 2);
+  assert.ok(retried.checkpoints.some((receipt) => receipt.receipt_id === prior[0].receipt_id && receipt.verification.status === 'passed'));
+  assert.equal(JSON.parse(fs.readFileSync(stored, 'utf8'))[0].verification.status, 'passed');
+  assert.equal(own(id).length, 2);
+});

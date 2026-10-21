@@ -49,6 +49,13 @@ export class LiveSession {
   }
   reset(preserveParser = false) { if (!preserveParser) this.parser = {}; this.seen = 0; this.windows = []; this.positions = new WeakMap(); this.events = null; this.session = null; this.rebuildCheckpoints = true; }
   async update() {
+    try { return await this.#update(); }
+    catch (error) {
+      // Retry every affected window after a failed write, including older dirty windows.
+      this.tail?.reset(); this.reset(); throw error;
+    }
+  }
+  async #update() {
     let bytes = 0; let offset = 0; let session;
     if (this.tail) {
       const tail = this.tail.read(); bytes = tail.bytes; offset = tail.offset;
@@ -123,7 +130,6 @@ export class LiveSession {
           const cost = spanCost(session.usageEvents || [], goal.spans, session.model, this.client); if (cost) goal.cost = cost;
         }
         const previousGoalCount = window.goals?.length;
-        window.result = result; window.goals = localGoals; window.pending = slice.ev.some((e) => e.pending);
         const goalAt = new Map(); for (const goal of localGoals) for (const [a, b] of goal.spans) for (let i = a; i <= b; i++) goalAt.set(i, goal);
         const contract = CLIENTS[this.client]?.contract; const harness = contract && contract !== 'other' ? contract : this.client;
         const signals = extractSignals(slice, { sessionId: id, harness, repo: meta.repo, receiptIdAt: (i) => { const goal = goalAt.get(i + window.start); return goal ? receiptIdOf(meta, goal.root) : null; } });
@@ -132,15 +138,24 @@ export class LiveSession {
           const rid = receiptIdOf(meta, goal.root);
           return withLifecycle(buildReceipt(meta, goal, st, result.threads.find((t) => t.id === goal.root), { threads: result.threads, governedBy: governed[rid] ?? governed[id] ?? session.governedBy, signals: signals.filter((s) => s.receiptId === rid).map((s) => s.signalId) }), 'provisional');
         });
-        const materiallyChanged = receipts.some((receipt, i) => !window.receipts[i] || materialFingerprint(receipt) !== materialFingerprint(window.receipts[i]));
-        if (materiallyChanged) window.activityAt = initial ? Math.max(...receipts.map((r) => Date.parse(r.timestamps.completed_at))) : Date.now();
-        window.receipts = receipts.map((receipt) => withLifecycle({ ...receipt, extensions: { ...receipt.extensions, 'org.orgx.trail/v1': { ...receipt.extensions['org.orgx.trail/v1'], lifecycle: { ...receipt.extensions['org.orgx.trail/v1'].lifecycle, material_at: new Date(window.activityAt).toISOString() } } } }, 'provisional'));
+        const materiallyChanged = receipts.length !== window.receipts.length || receipts.some((receipt, i) => materialFingerprint(receipt) !== materialFingerprint(window.receipts[i]));
+        const activityAt = materiallyChanged ? (initial ? Math.max(...receipts.map((r) => Date.parse(r.timestamps.completed_at))) : Date.now()) : window.activityAt;
+        const nextReceipts = materiallyChanged ? receipts.map((receipt) => withLifecycle({
+          ...receipt,
+          extensions: { ...receipt.extensions, 'org.orgx.trail/v1': {
+            ...receipt.extensions['org.orgx.trail/v1'],
+            lifecycle: { ...receipt.extensions['org.orgx.trail/v1'].lifecycle, material_at: new Date(activityAt).toISOString() },
+          } },
+        }, 'provisional')) : window.receipts;
         // Goal display numbering can change independently of persisted thread/receipt identities.
         if (previousGoalCount !== undefined && previousGoalCount !== localGoals.length) {
           for (const following of this.windows.slice(this.windows.indexOf(window) + 1)) affected.add(following);
         }
-        if (this.persist) writeReceipts(checkpointName(id, window.start), window.receipts);
-        checkpoints.push(...window.receipts);
+        // Rebuilding can leave the material receipt unchanged when an adjacent goal begins.
+        if (materiallyChanged && this.persist) writeReceipts(checkpointName(id, window.start), nextReceipts);
+        window.result = result; window.goals = localGoals; window.pending = slice.ev.some((e) => e.pending);
+        window.receipts = nextReceipts; window.activityAt = activityAt;
+        if (materiallyChanged) checkpoints.push(...window.receipts);
       }
       goalBase += window.goals?.length || 0;
     }
