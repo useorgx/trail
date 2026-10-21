@@ -35,7 +35,7 @@ import { credential, baseUrl } from './credentials.mjs';
 const iso = (t, d) => { const x = Date.parse(t || d); return Number.isFinite(x) ? new Date(x).toISOString() : new Date(0).toISOString(); };
 const clampMoves = (m) => (m.length <= 400 ? m : m.slice(0, 200) + m.slice(-200));
 const outlineThreadId = (id) => {
-  if (typeof id !== 'string' || !/^T[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id.slice(1)))) throw new Error('Cannot sync an outline with an invalid stable thread identity.');
+  if (typeof id !== 'string' || !/^T\d{1,16}$/.test(id) || !Number.isSafeInteger(Number(id.slice(1)))) throw new Error('Cannot sync an outline with an invalid stable thread identity.');
   return id;
 };
 

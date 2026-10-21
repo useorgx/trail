@@ -98,6 +98,30 @@ test('unambiguous historical receipt and session-span aliases win over new defau
   assert.ok(JSON.parse(fs.readFileSync(registryFile(input), 'utf8')).reserved.includes('T40'));
 });
 
+test('legacy zero and leading-zero aliases survive exact migration and restart without moving annotations', async () => {
+  const input = fixture('legacy-zero-aliases', [ask('Historical zero alias'), tool('npm test'), ask('Historical padded alias'), tool('npm run build'), ask('New positive alias')]);
+  ownReceipts(input.id, [oldReceipt(input, 'T0', 0), oldReceipt(input, 'T0001', 2)]);
+  const receipt = (alias) => `trail:${input.client}:${input.id}:${alias}`;
+  const files = [P.labels, P.signals, P.governed, path.join(home, 'taxonomy.json')];
+  const before = new Map(files.map((file) => [file, fs.existsSync(file) ? fs.readFileSync(file) : null]));
+  fs.writeFileSync(P.labels, ['T0', 'T0001'].map((alias) => JSON.stringify({ session: input.id, client: input.client, thread: alias, status: 'done' })).join('\n') + '\n');
+  fs.writeFileSync(P.signals, JSON.stringify({ signalId: 'synthetic-zero-alias-signal', receiptId: receipt('T0') }) + '\n');
+  fs.writeFileSync(P.governed, JSON.stringify({ [receipt('T0001')]: [{ claimId: 'synthetic-padded-alias-claim' }] }));
+  fs.writeFileSync(path.join(home, 'taxonomy.json'), JSON.stringify({ overrides: { [receipt('T0')]: { by: 'human', outcome: 'succeeded' } } }));
+  const snapshots = new Map(files.map((file) => [file, fs.readFileSync(file, 'utf8')]));
+  try {
+    const threads = [thread('T1', 0), thread('T2', 2), thread('T3', 4)];
+    const result = await allocate(input, threads);
+    assert.deepEqual(result.conflicts, []);
+    assert.equal(result.ids.get('T1'), 'T0'); assert.equal(result.ids.get('T2'), 'T0001');
+    assert.match(result.ids.get('T3'), /^T[1-9]\d*$/, 'new work still receives a positive unpadded alias');
+    assert.deepEqual((await child({ ...input, threads })).ids, output(result), 'persisted zero aliases pass state validation after restart');
+    for (const [file, content] of snapshots) assert.equal(fs.readFileSync(file, 'utf8'), content);
+  } finally {
+    for (const [file, content] of before) { if (content === null) fs.rmSync(file, { force: true }); else fs.writeFileSync(file, content); }
+  }
+});
+
 test('conflicting historical aliases are retained and reported durably without raw prompt text', async () => {
   const input = fixture('legacy-conflict', [ask('Private synthetic request must stay out of identity metadata')]);
   ownReceipts(input.id, [oldReceipt(input, 'T2', 0), oldReceipt(input, 'T3', 0)]);

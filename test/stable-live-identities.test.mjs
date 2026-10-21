@@ -160,9 +160,11 @@ test('cooperating scan workers share allocation without collisions or remapping'
 
 test('outline transport preserves larger stable aliases and refuses unsafe IDs instead of renumbering them', async () => {
   const session = await batch(source('outline-identities', goal('outline feature')));
-  session.threads[0].id = 'T100001';
-  assert.equal(toSession(session, false).threads[0].id, 'T100001');
-  for (const id of ['T9007199254740992', 'T0', 'arbitrary-source-text']) {
+  for (const id of ['T100001', 'T0', 'T0001']) {
+    session.threads[0].id = id;
+    assert.equal(toSession(session, false).threads[0].id, id);
+  }
+  for (const id of ['T9007199254740992', 'T-1', 'arbitrary-source-text']) {
     session.threads[0].id = id;
     assert.throws(() => toSession(session, false), /invalid stable thread identity/);
   }

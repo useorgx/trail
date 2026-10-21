@@ -8,7 +8,8 @@ import { redactDeep } from './redact.mjs';
 
 const ROOT = path.join(HOME, 'thread-identities');
 const hash = (value) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const aliasNumber = (value) => /^T[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value.slice(1))) ? Number(value.slice(1)) : null;
+// Older uploads accepted zero and leading zeroes. Preserve those exact aliases; new allocations stay positive.
+const aliasNumber = (value) => typeof value === 'string' && /^T\d+$/.test(value) && Number.isSafeInteger(Number(value.slice(1))) ? Number(value.slice(1)) : null;
 const safeId = (id) => typeof id === 'string' && id.length > 0 && !/[\/\\\0]/.test(id) && id !== '.' && id !== '..';
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const persisted = new Map(); const ephemeral = new Map();
@@ -24,10 +25,10 @@ function atomic(file, value) {
 const stamp = (file) => { try { const s = fs.statSync(file); return `${s.ino}:${s.size}:${s.mtimeMs}`; } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const fresh = (client, id) => ({ version: 1, client, id, next: 1, bindings: {}, epochs: {}, reserved: [], conflicts: [], migrated: false });
 function validate(state, client, id) {
-  if (state?.version !== 1 || state.client !== client || state.id !== id || !Number.isSafeInteger(state.next) || state.next < 1 || !object(state.bindings) || !object(state.epochs) || !Array.isArray(state.reserved) || state.reserved.some((a) => !aliasNumber(a) || aliasNumber(a) >= state.next) || !Array.isArray(state.conflicts)) throw new Error('Invalid stable thread identity state; existing aliases were left untouched.');
+  if (state?.version !== 1 || state.client !== client || state.id !== id || !Number.isSafeInteger(state.next) || state.next < 1 || !object(state.bindings) || !object(state.epochs) || !Array.isArray(state.reserved) || state.reserved.some((a) => aliasNumber(a) === null || aliasNumber(a) >= state.next) || !Array.isArray(state.conflicts)) throw new Error('Invalid stable thread identity state; existing aliases were left untouched.');
   const used = new Map(); const reserved = new Set(state.reserved);
   for (const [key, alias] of Object.entries(state.bindings)) {
-    if (!/^[a-f0-9]{64}:\d+:[a-f0-9]{64}$/.test(key) || !aliasNumber(alias) || !reserved.has(alias) || (used.has(alias) && used.get(alias) !== key)) throw new Error('Conflicting stable thread identity state; existing aliases were left untouched.');
+    if (!/^[a-f0-9]{64}:\d+:[a-f0-9]{64}$/.test(key) || aliasNumber(alias) === null || !reserved.has(alias) || (used.has(alias) && used.get(alias) !== key)) throw new Error('Conflicting stable thread identity state; existing aliases were left untouched.');
     used.set(alias, key);
   }
   return state;
@@ -56,10 +57,10 @@ const normalized = (text) => typeof text === 'string' ? text.replace(/\s+/g, ' '
 function legacy(client, id, events) {
   const reserved = new Set(); const candidates = [];
   if (!safeId(id)) return { reserved, candidates };
-  const reserve = (alias) => { if (aliasNumber(alias)) reserved.add(alias); };
+  const reserve = (alias) => { if (aliasNumber(alias) !== null) reserved.add(alias); };
   const add = (alias, at, observed, excerpt, limit) => {
     reserve(alias); const event = events[at];
-    if (!aliasNumber(alias) || !Number.isSafeInteger(at) || at < 0 || !event || !sameTime(event.ts, observed)) return;
+    if (aliasNumber(alias) === null || !Number.isSafeInteger(at) || at < 0 || !event || !sameTime(event.ts, observed)) return;
     // Receipt request evidence records the source ask, never an inferred title.
     if (excerpt !== undefined && (event.k !== 'ask' || normalized(redactDeep(limit ? normalized(event.text)?.slice(0, limit) : event.text)) !== normalized(excerpt))) return;
     candidates.push({ alias, at, digest: opening(event, at) });
@@ -105,7 +106,7 @@ function legacy(client, id, events) {
         if (evidence.kind !== 'request' || ref?.system !== client || ref.type !== 'transcript_event' || typeof ref.id !== 'string' || !ref.id.startsWith(eventPrefix)) continue;
         const index = ref.id.slice(eventPrefix.length); if (!/^(0|[1-9]\d*)$/.test(index)) continue;
         add(alias, Number(index), evidence.observed_at, evidence.excerpt);
-        if (aliasNumber(suffix) && suffix !== alias) add(suffix, Number(index), evidence.observed_at, evidence.excerpt);
+        if (aliasNumber(suffix) !== null && suffix !== alias) add(suffix, Number(index), evidence.observed_at, evidence.excerpt);
       }
     }
   }
@@ -140,7 +141,7 @@ export async function assignThreadIdentities({ file, client, id, events, threads
   const registry = path.join(ROOT, `${session}.json`); const sourceFile = path.join(ROOT, `${session}-${source}.source.json`);
   const candidates = threads.map((thread) => {
     const at = thread.at + offset; const event = events[at];
-    if (!aliasNumber(thread.id) || !Number.isSafeInteger(at) || at < 0 || !object(event)) throw new Error('Thread identity requires an exact opening event.');
+    if (aliasNumber(thread.id) === null || !Number.isSafeInteger(at) || at < 0 || !object(event)) throw new Error('Thread identity requires an exact opening event.');
     return { local: thread.id, at, digest: opening(event, at) };
   });
   const apply = async () => {
