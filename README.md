@@ -107,6 +107,18 @@ Local scanning, the demo, browser UI, and MCP require no account or paid model. 
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
 | `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first. Also sends the judgments you made along the way (corrections, rejected tool calls, denials, rules you stated) so OrgX can turn them into precedents; they are kept locally in `~/.orgx/trail/precedent-candidates.jsonl` until then |
 
+Sync acknowledgements are separate for each normalized OrgX base URL and sign-in
+credential. Switching destinations or credentials sends that scope's missing
+outlines, receipts, and judgment signals; returning to a previous scope reuses
+its acknowledgements. Old acknowledgement files without a known scope safely
+re-send once, using the existing server idempotency rules. Credentials are never
+written to the sync state.
+
+Dry runs do not write sync state, locks, or a workstream snapshot. They do not
+open the keychain or require sign-in. With `ORGX_API_KEY` already set, the preview
+uses that credential's acknowledgements; otherwise its backlog is conservative
+and includes work that another sign-in may already have sent.
+
 ### Deliver a ratified OrgX method
 
 `trail methods list --workspace <workspace-id>` reads a current canonical method index using the OrgX sign-in from `trail connect` or `ORGX_API_KEY`. This command does not read session history. Copy the selected method's ID, version and digest into a preview, which fetches its full operational instructions and provenance:

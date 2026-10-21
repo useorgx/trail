@@ -24,6 +24,30 @@ const saveSyncState = (state) => {
 };
 const CHUNK = 200;
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+const ACK_FIELDS = ['sessions', 'receipts', 'receiptRevisions', 'signalsSent'];
+const object = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+function syncRoot(base) {
+  const url = new URL(baseUrl(base));
+  if (url.username || url.password || url.search || url.hash) throw new Error('OrgX base URL must not contain credentials, a query, or a fragment.');
+  return url.href.replace(/\/+$/, '');
+}
+function syncState(root, key) {
+  let stored;
+  try { stored = JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch {}
+  // Legacy acknowledgements have no destination/account evidence. Re-send them
+  // safely using the existing server idempotency keys instead of guessing.
+  const destinations = object(stored?.destinations);
+  const scope = key ? sha(JSON.stringify(['trail-sync/v2', root, key])) : null;
+  const previous = scope ? object(destinations[scope]) : {};
+  const state = Object.fromEntries(ACK_FIELDS.map((field) => [field, object(previous[field])]));
+  return { state, scopeKnown: scope !== null, save: () => {
+    destinations[scope] = state;
+    saveSyncState({ version: 2, destinations });
+  } };
+}
+// Previews never prompt the keychain or need a login. Without an explicit key,
+// show a conservative backlog rather than applying an unknown account's acks.
+const previewKey = () => process.env.ORGX_API_KEY?.trim() || null;
 import { CLIENTS } from './clients.mjs';
 const CLIENT = Object.fromEntries(Object.entries(CLIENTS).map(([k, v]) => [k, v.contract]));
 const ORIGIN = (t) => (t.origin === 'surprise' ? ({ wall: 'wall', recovery: 'recovery' }[t.kind] || 'found') : ({ ask: 'asked', plan: 'plan', schedule: 'scheduled', agent: 'plan' }[t.origin] || 'asked'));
@@ -58,10 +82,14 @@ export function toSession(s, bounded) {
 
 const fingerprint = (s) => `${s.tools}:${s.threads.length}:${s.end}`;
 
-export function sync(options = {}) { return withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
-async function performOutlineSync({ dryRun = false, withTitles = false, base, limit } = {}) {
+export function sync(options = {}) { return options.dryRun ? performOutlineSync(options) : withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
+async function performOutlineSync({ dryRun = false, withTitles = false, base, limit, fetchImpl = fetch } = {}) {
   const bounded = !!withTitles;
-  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })();
+  const root = syncRoot(base);
+  const cred = dryRun ? null : credential();
+  if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
+  if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.key);
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
   let todo = limit ? sessions.slice(-limit) : sessions;
   // Titles are the only text a bounded upload carries: with personal-data masking on, they go through
@@ -85,22 +113,19 @@ async function performOutlineSync({ dryRun = false, withTitles = false, base, li
     sessions: chunk.map((s) => toSession(s, bounded)), adoptions: withAdoptions ? adoptions : [] });
   const chunks = []; for (let i = 0; i < todo.length; i += CHUNK) chunks.push(todo.slice(i, i + CHUNK));
   if (!chunks.length && adoptions.length) chunks.push([]);
-  const url = `${baseUrl(base)}/api/v1/trail/uploads`;
+  const url = `${root}/api/v1/trail/uploads`;
   if (dryRun) {
     const first = chunks[0] ? envelope(chunks[0].slice(0, 1), false) : null;
-    return { dryRun: true, url, privacy: bounded ? 'bounded' : 'metadata_only', sessions: todo.length, requests: chunks.length, threads: todo.reduce((a, s) => a + s.threads.length, 0), adoptions: adoptions.length, example: first?.sessions[0] ?? null };
+    return { dryRun: true, url, scopeKnown, privacy: bounded ? 'bounded' : 'metadata_only', sessions: todo.length, requests: chunks.length, threads: todo.reduce((a, s) => a + s.threads.length, 0), adoptions: adoptions.length, example: first?.sessions[0] ?? null };
   }
-  const cred = credential();
-  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
-  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
   let sent = 0, threads = 0; let workspace = null;
   for (let i = 0; i < chunks.length; i++) {
-    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
+    const res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`OrgX refused the upload (${res.status}): ${body.error || 'unknown error'}${body.issues ? ' ' + JSON.stringify(body.issues.slice(0, 2)) : ''}`);
     sent += chunks[i].length; threads += body.data?.threads ?? 0; workspace = body.data?.workspaceId ?? workspace;
     for (const s of chunks[i]) state.sessions[s.id] = fingerprint(s);
-    saveSyncState(state);
+    save();
   }
   return { dryRun: false, url, credential: cred.from, sessions: sent, threads, workspace, privacy: bounded ? 'bounded' : 'metadata_only' };
 }
@@ -144,15 +169,19 @@ export function withLifecycle(receipt, status, reason = status === 'final' ? 'se
 
 let receiptSyncQueue = Promise.resolve();
 export function syncReceipts(options = {}) {
-  const result = receiptSyncQueue.then(() => withProcessLock(SYNC_LOCK, () => performReceiptSync(options)));
+  const result = receiptSyncQueue.then(() => options.dryRun ? performReceiptSync(options) : withProcessLock(SYNC_LOCK, () => performReceiptSync(options)));
   receiptSyncQueue = result.catch(() => {});
   return result;
 }
 async function performReceiptSync({ dryRun = false, base, limit = 50, since, receipts, lane = 'final', now = Date.now(), fetchImpl = fetch } = {}) {
   const { ledger, withGraph } = await import('./ledger.mjs');
-  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {}; state.receiptRevisions ||= {};
   if (!['provisional', 'final'].includes(lane)) throw new Error('Receipt lane must be provisional or final.');
-  const L = receipts ? null : ledger({ persist: true });
+  const root = syncRoot(base);
+  const cred = dryRun ? null : credential();
+  if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
+  if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.key);
+  const L = receipts ? null : ledger({ persist: !dryRun, fresh: dryRun });
   const source = receipts || L.receipts;
   const settled = now - SETTLE_MS;
   let todo = source.filter((r) => (!since || r.timestamps.started_at >= since) && (lane === 'provisional' || (!r.actions?.some((a) => a.status === 'running') && Date.parse(r.timestamps.completed_at) <= settled)))
@@ -170,16 +199,12 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   })
     .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at)));
   const eligible = todo.length; todo = todo.slice(0, limit);
-  const root = baseUrl(base); const url = `${root}/api/v1/agent-work-receipts`;
+  const url = `${root}/api/v1/agent-work-receipts`;
   const privacy = piiEnabled() ? 'receipts (secrets redacted, personal data masked)' : 'receipts (secrets redacted; personal-data masking off — trail privacy --pii on)';
   state.signalsSent ||= {};
   const signals = lane === 'provisional' ? [] : unsentSignals(state);
-  if (dryRun) return { dryRun: true, url, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
-  const cred = credential();
-  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
-  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  if (dryRun) return { dryRun: true, url, scopeKnown, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` };
-  const save = () => saveSyncState(state);
   let sent = 0, duplicate = 0; const refused = [];
   // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
   let batch = true;

@@ -272,7 +272,9 @@ test('R2/R3: independent CLI and hook processes serialize uploads and preserve b
   assert.ok(fs.existsSync(path.join(shared, 'a.ready')));
   await Promise.all([first, run('b')]);
   const state = JSON.parse(fs.readFileSync(path.join(shared, 'sync.json')));
-  assert.deepEqual(Object.keys(state.receipts).sort(), ['a', 'b']);
+  const destinations = Object.values(state.destinations);
+  assert.equal(destinations.length, 1, 'both processes share one destination and credential');
+  assert.deepEqual(Object.keys(destinations[0].receipts).sort(), ['a', 'b']);
   assert.equal(fs.existsSync(path.join(shared, 'sync.lock')), false);
 });
 
