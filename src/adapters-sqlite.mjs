@@ -61,7 +61,7 @@ export function discoverCursor(since) {
 
 export async function readOpenCode(ref) {
   const [file, id] = ref.split('#'); const d = db(file); const ev = []; const reasoning = [];
-  if (!d) return { client: 'opencode', id, start: null, end: null, cwd: null, model: null, mode: null, ev };
+  if (!d) return { client: 'opencode', id, start: null, end: null, cwd: null, model: null, mode: null, ev, available: false };
   try {
     const s = d.prepare('SELECT directory, model, time_created, time_updated FROM session WHERE id = ?').get(id) || {};
     const rows = d.prepare(`SELECT m.data AS m, p.data AS p, p.time_created AS t FROM message m JOIN part p ON p.message_id = m.id
@@ -90,7 +90,7 @@ export async function readOpenCode(ref) {
 export async function readCursor(file) {
   const dir = path.dirname(file); const meta = obj((() => { try { return fs.readFileSync(path.join(dir, 'meta.json'), 'utf8'); } catch { return '{}'; } })()) || {};
   const start = iso(meta.createdAtMs), end = iso(meta.updatedAtMs) || start; const ev = []; const reasoning = []; const pend = new Map(); let askMode = false;
-  const d = db(file); if (!d) return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: null, ev };
+  const d = db(file); if (!d) return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: null, ev, available: false };
   try {
     for (const r of d.prepare("SELECT CAST(data AS TEXT) AS data FROM blobs WHERE json_valid(CAST(data AS TEXT)) = 1 ORDER BY rowid").all()) {
       const m = obj(r.data); if (!m || (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool')) continue;
@@ -182,7 +182,7 @@ function repoOf(paths) {
 export async function readCursorIDE(ref) {
   const i = ref.lastIndexOf('#'); const file = ref.slice(0, i), id = ref.slice(i + 1);
   const d = db(file); const ev = []; const reasoning = []; const paths = [];
-  if (!d) return { client: 'cursor-ide', id, start: null, end: null, cwd: null, model: null, mode: null, ev, reasoning };
+  if (!d) return { client: 'cursor-ide', id, start: null, end: null, cwd: null, model: null, mode: null, ev, reasoning, available: false };
   try {
     const comp = parseJSON(String(d.prepare('SELECT value FROM cursorDiskKV WHERE key = ?').get('composerData:' + id)?.value ?? 'null')) || {};
     const bubble = d.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');

@@ -9,7 +9,7 @@ import { isCorrection, extractSignals } from './precedent.mjs';
 import { steps } from './steps.mjs';
 import { buildGoals } from './goals.mjs';
 import { buildReceipt, receiptIdOf } from './receipt.mjs';
-import { writeReceipts, appendSignals, loadGoverned } from './store.mjs';
+import { writeReceipts, appendSignals, loadGoverned, checkpointName, checkpointSession, reconcileCheckpoints } from './store.mjs';
 import { spanCost } from './cost.mjs';
 import { repoOf } from './workstreams.mjs';
 import { withLifecycle, SETTLE_MS } from './sync.mjs';
@@ -42,22 +42,34 @@ export class LiveSession {
   constructor(file, client, { persist = true } = {}) {
     this.file = file; this.client = client; this.persist = persist;
     this.incremental = ['claude', 'codex'].includes(client) && file.endsWith('.jsonl');
+    this.checkpointId = persist ? checkpointSession(file, client) : null;
     this.tail = this.incremental ? new ByteTail(file) : null; this.reset();
   }
-  reset(preserveParser = false) { if (!preserveParser) this.parser = {}; this.seen = 0; this.windows = []; this.positions = new WeakMap(); this.events = null; this.session = null; }
+  reset(preserveParser = false) { if (!preserveParser) this.parser = {}; this.seen = 0; this.windows = []; this.positions = new WeakMap(); this.events = null; this.session = null; this.rebuildCheckpoints = true; }
   async update() {
+    try { return await this.#update(); }
+    catch (error) {
+      // Retry every affected window after a failed write, including older dirty windows.
+      this.tail?.reset(); this.reset(); throw error;
+    }
+  }
+  async #update() {
     let bytes = 0; let offset = 0; let session;
     if (this.tail) {
       const tail = this.tail.read(); bytes = tail.bytes; offset = tail.offset;
       if (tail.reset) this.reset();
-      if (!tail.lines.length) return { changed: false, bytes, offset, checkpoints: [] };
+      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) return { changed: false, bytes, offset, checkpoints: [] };
       session = await (this.client === 'claude' ? readClaude : readCodex)(this.file, { state: this.parser, lines: tail.lines });
     } else {
       // Mutable JSON snapshots and SQLite exports use their native reader, while keeping the same receipt pipeline.
-      session = await readSession(this.file, this.client); this.reset();
+      session = await readSession(this.file, this.client);
+      // A missing native reader provides no evidence that prior goals disappeared.
+      if (session.available === false) return { changed: false, bytes, offset, checkpoints: [] };
+      this.reset();
     }
     if (this.events && session.ev !== this.events) this.reset(true); // Codex switches representation; pending parser state survives.
     this.events = session.ev; this.session = session;
+    const previousWindowCount = this.windows.length;
     const initial = this.seen === 0;
     const affected = new Set();
     for (const event of this.parser.dirty || []) {
@@ -79,7 +91,8 @@ export class LiveSession {
     this.seen = session.ev.length;
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
-    const id = session.id || path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const fallbackId = path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const id = (!session.ev.length && !['opencode', 'cursor-ide'].includes(this.client) && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
     const checkpoints = []; let threadBase = 0; let goalBase = 0;
@@ -102,7 +115,6 @@ export class LiveSession {
           const cost = spanCost(session.usageEvents || [], goal.spans, session.model, this.client); if (cost) goal.cost = cost;
         }
         const previousThreadCount = window.result?.threads.length;
-        window.result = result; window.goals = localGoals; window.pending = slice.ev.some((e) => e.pending);
         const goalAt = new Map(); for (const goal of localGoals) for (const [a, b] of goal.spans) for (let i = a; i <= b; i++) goalAt.set(i, goal);
         const contract = CLIENTS[this.client]?.contract; const harness = contract && contract !== 'other' ? contract : this.client;
         const signals = extractSignals(slice, { sessionId: id, harness, repo: meta.repo, receiptIdAt: (i) => { const goal = goalAt.get(i + window.start); return goal ? receiptIdOf(meta, goal.root) : null; } });
@@ -111,18 +123,32 @@ export class LiveSession {
           const rid = receiptIdOf(meta, goal.root);
           return withLifecycle(buildReceipt(meta, goal, st, result.threads.find((t) => t.id === goal.root), { threads: result.threads, governedBy: governed[rid] ?? governed[id] ?? session.governedBy, signals: signals.filter((s) => s.receiptId === rid).map((s) => s.signalId) }), 'provisional');
         });
-        const materiallyChanged = receipts.some((receipt, i) => !window.receipts[i] || materialFingerprint(receipt) !== materialFingerprint(window.receipts[i]));
-        if (materiallyChanged) window.activityAt = initial ? Math.max(...receipts.map((r) => Date.parse(r.timestamps.completed_at))) : Date.now();
-        window.receipts = receipts.map((receipt) => withLifecycle({ ...receipt, extensions: { ...receipt.extensions, 'org.orgx.trail/v1': { ...receipt.extensions['org.orgx.trail/v1'], lifecycle: { ...receipt.extensions['org.orgx.trail/v1'].lifecycle, material_at: new Date(window.activityAt).toISOString() } } } }, 'provisional'));
+        const materiallyChanged = receipts.length !== window.receipts.length || receipts.some((receipt, i) => materialFingerprint(receipt) !== materialFingerprint(window.receipts[i]));
+        const activityAt = materiallyChanged ? (initial ? Math.max(...receipts.map((r) => Date.parse(r.timestamps.completed_at))) : Date.now()) : window.activityAt;
+        const nextReceipts = materiallyChanged ? receipts.map((receipt) => withLifecycle({
+          ...receipt,
+          extensions: { ...receipt.extensions, 'org.orgx.trail/v1': {
+            ...receipt.extensions['org.orgx.trail/v1'],
+            lifecycle: { ...receipt.extensions['org.orgx.trail/v1'].lifecycle, material_at: new Date(activityAt).toISOString() },
+          } },
+        }, 'provisional')) : window.receipts;
         // A late failure can introduce a detour in an older goal. Rebase later IDs to keep them unique.
         if (previousThreadCount !== undefined && previousThreadCount !== result.threads.length) {
           for (const following of this.windows.slice(this.windows.indexOf(window) + 1)) affected.add(following);
         }
-        if (this.persist) writeReceipts(`${id}--checkpoint-${window.start}`, window.receipts);
-        checkpoints.push(...window.receipts);
+        // Rebuilding can leave the material receipt unchanged when an adjacent goal begins.
+        if (materiallyChanged && this.persist) writeReceipts(checkpointName(id, window.start), nextReceipts);
+        window.result = result; window.goals = localGoals; window.pending = slice.ev.some((e) => e.pending);
+        window.receipts = nextReceipts; window.activityAt = activityAt;
+        if (materiallyChanged) checkpoints.push(...window.receipts);
       }
       threadBase += window.result?.threads.length || 0; goalBase += window.goals?.length || 0;
     }
+    // Reconcile only after a successful rebuild or boundary change, never by scanning receipt history on appends.
+    if (this.persist && (this.rebuildCheckpoints || previousWindowCount !== this.windows.length || this.checkpointId !== id)) {
+      reconcileCheckpoints(this.file, this.client, id, this.windows.map((window) => window.start));
+    }
+    this.checkpointId = id; this.rebuildCheckpoints = false;
     return { changed: true, bytes, offset, session, checkpoints, windows: this.windows };
   }
   settled(now = Date.now(), settleMs = SETTLE_MS) {
