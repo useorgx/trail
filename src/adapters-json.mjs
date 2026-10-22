@@ -12,8 +12,8 @@ const readJSON = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); }
 const iso = (x) => { if (x == null) return null; const d = new Date(typeof x === 'number' ? x : String(x)); return isNaN(d) ? null : d.toISOString(); };
 const clip = (s, n) => String(s ?? '').slice(0, n);
 const argTarget = (a = {}) => clip(a.command ?? a.filePath ?? a.file_path ?? a.absolute_path ?? a.path ?? a.target_file ?? a.pattern ?? a.query ?? a.url ?? a.dir_path ?? '', 240);
-const say = (ev, ts, x) => { x = String(x || '').trim(); if (x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) }); };
-const ask = (ev, ts, x) => { x = String(x || '').trim(); if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'human' }); };
+const say = (ev, ts, x, source_id) => { x = String(x || '').trim(); if (x.length > 25) ev.push({ k: 'say', ts, ...(source_id ? { source_id } : {}), text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) }); };
+const ask = (ev, ts, x, source_id) => { x = String(x || '').trim(); if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts, ...(source_id ? { source_id } : {}), text: x.slice(0, 600), who: 'human' }); };
 
 // ---- GitHub Copilot in VS Code ------------------------------------------------------------------------------
 const VSCODE_DIRS = ['Code', 'Code - Insiders', 'VSCodium'];
@@ -57,7 +57,7 @@ export async function readCopilot(file) {
   let model = null;
   for (const q of s.requests || []) {
     const ts = iso(q.timestamp); model = q.modelId || model;
-    ask(ev, ts, q.message?.text);
+    ask(ev, ts, q.message?.text, typeof q.requestId === 'string' && q.requestId ? `copilot-request:${q.requestId}` : undefined);
     // Same toolCallId appears once per state change: keep the first position, the last data.
     const tools = new Map(); const order = []; let text = '';
     const flush = () => { say(ev, ts, text); text = ''; };
@@ -75,7 +75,7 @@ export async function readCopilot(file) {
       const inv = tools.get(id); const call = calls[n]; const raw = call?.name || inv.toolId || 'unknown';
       let args = {}; try { args = JSON.parse(call?.arguments || inv.resultDetails?.input || '{}'); } catch {}
       const details = inv.resultDetails; const failed = details?.isError === true || inv.isConfirmed === false;
-      const e = { k: 'tool', ts, client: 'copilot', tool: COPILOT_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw), rawTool: raw, target: argTarget(args), err: failed, denied: inv.isConfirmed === false, errText: failed ? clip(JSON.stringify(details?.output ?? details ?? ''), 400) : '' };
+      const e = { k: 'tool', ts, ...(typeof id === 'string' && id ? { source_id: `copilot-tool:${JSON.stringify([q.requestId ?? null, id])}` } : {}), client: 'copilot', tool: COPILOT_TOOL[raw] || (raw.startsWith('mcp_') ? raw : raw), rawTool: raw, target: argTarget(args), err: failed, denied: inv.isConfirmed === false, errText: failed ? clip(JSON.stringify(details?.output ?? details ?? ''), 400) : '' };
       if (inv.isConfirmed === false) markRejected(e, e.errText);
       const at = ev.findIndex((x) => x.placeholder === id); if (at >= 0) ev[at] = e;
     });
@@ -101,14 +101,15 @@ export async function readGemini(file) {
   const root = (() => { try { return fs.readFileSync(path.join(path.dirname(path.dirname(file)), '.project_root'), 'utf8').trim(); } catch { return null; } })();
   for (const m of s.messages || []) {
     const ts = iso(m.timestamp);
-    if (m.type === 'user') { ask(ev, ts, geminiText(m.content)); continue; }
+    const source_id = typeof m.id === 'string' && m.id ? `gemini-message:${m.id}` : undefined;
+    if (m.type === 'user') { ask(ev, ts, geminiText(m.content), source_id); continue; }
     if (m.type !== 'gemini') continue; model = m.model || model;
     for (const t of m.thoughts || []) { const x = [t.subject, t.description].filter(Boolean).join(': '); if (x) reasoning.push({ i: ev.length, ts, text: x.slice(0, 6000) }); }
-    say(ev, ts, geminiText(m.content));
+    say(ev, ts, geminiText(m.content), source_id);
     for (const c of m.toolCalls || []) {
       const resp = JSON.stringify((c.result || []).map((r) => r.functionResponse?.response ?? r) ?? '');
       const err = c.status === 'error' || /"error"/.test(resp.slice(0, 200)); const denied = c.status === 'cancelled';
-      const e = { k: 'tool', ts: iso(c.timestamp) || ts, client: 'gemini', tool: GEMINI_TOOL[c.name] || c.name, rawTool: c.name, target: argTarget(c.args), err: err || denied, denied, errText: err || denied ? clip(resp, 400) : '' };
+      const e = { k: 'tool', ts: iso(c.timestamp) || ts, ...(typeof c.id === 'string' && c.id ? { source_id: `gemini-tool:${c.id}` } : {}), client: 'gemini', tool: GEMINI_TOOL[c.name] || c.name, rawTool: c.name, target: argTarget(c.args), err: err || denied, denied, errText: err || denied ? clip(resp, 400) : '' };
       if (denied) markRejected(e, resp);
       if (!e.err && e.tool === 'Bash') e.outTail = resp.slice(-400);
       ev.push(e);

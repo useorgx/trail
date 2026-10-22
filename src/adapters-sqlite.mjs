@@ -64,17 +64,17 @@ export async function readOpenCode(ref) {
   if (!d) return { client: 'opencode', id, start: null, end: null, cwd: null, model: null, mode: null, ev, available: false };
   try {
     const s = d.prepare('SELECT directory, model, time_created, time_updated FROM session WHERE id = ?').get(id) || {};
-    const rows = d.prepare(`SELECT m.data AS m, p.data AS p, p.time_created AS t FROM message m JOIN part p ON p.message_id = m.id
+    const rows = d.prepare(`SELECT m.data AS m, p.data AS p, p.id AS source_id, p.time_created AS t FROM message m JOIN part p ON p.message_id = m.id
       WHERE m.session_id = ? ORDER BY m.time_created, p.time_created, p.id`).all(id);
     for (const r of rows) {
-      const m = obj(r.m) || {}; const p = obj(r.p); if (!p) continue; const ts = iso(Number(r.t));
-      if (p.type === 'text' && m.role === 'user') { const x = String(p.text || '').trim(); if (x && !p.synthetic && !HARNESS.test(x)) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'human' }); }
-      else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
-      else if (p.type === 'compaction') ev.push({ k: 'compact', ts });
+      const m = obj(r.m) || {}; const p = obj(r.p); if (!p) continue; const ts = iso(Number(r.t)); const source_id = `opencode-part:${r.source_id}`;
+      if (p.type === 'text' && m.role === 'user') { const x = String(p.text || '').trim(); if (x && !p.synthetic && !HARNESS.test(x)) ev.push({ k: 'ask', ts, source_id, text: x.slice(0, 600), who: 'human' }); }
+      else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts, source_id, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
+      else if (p.type === 'compaction') ev.push({ k: 'compact', ts, source_id });
       else if (p.type === 'reasoning' && p.text) reasoning.push({ i: ev.length, ts, text: String(p.text).slice(0, 6000) });
       else if (p.type === 'tool') {
         const st = p.state || {}; const raw = String(p.tool || 'tool'); const err = st.status === 'error'; const errText = err ? String(st.error || '').slice(0, 400) : '';
-        const e = { k: 'tool', ts: iso(st.time?.start) || ts, client: 'opencode', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(st.input), err, denied: err && DENIED.test(errText), errText };
+        const e = { k: 'tool', ts: iso(st.time?.start) || ts, source_id, client: 'opencode', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(st.input), err, denied: err && DENIED.test(errText), errText };
         if (err && USER_REJECTED.test(String(st.error || ''))) markRejected(e, String(st.error));
         if (!err && e.tool === 'Bash' && /\bgit (commit|push)|gh pr (create|merge)/.test(e.target)) e.out = String(st.output || '').slice(0, 300);
         ev.push(e);
@@ -92,21 +92,22 @@ export async function readCursor(file) {
   const start = iso(meta.createdAtMs), end = iso(meta.updatedAtMs) || start; const ev = []; const reasoning = []; const pend = new Map(); let askMode = false;
   const d = db(file); if (!d) return { client: 'cursor', id: path.basename(dir), start, end, cwd: meta.cwd || null, model: null, mode: null, ev, available: false };
   try {
-    for (const r of d.prepare("SELECT CAST(data AS TEXT) AS data FROM blobs WHERE json_valid(CAST(data AS TEXT)) = 1 ORDER BY rowid").all()) {
+    for (const r of d.prepare("SELECT id AS source_id, CAST(data AS TEXT) AS data FROM blobs WHERE json_valid(CAST(data AS TEXT)) = 1 ORDER BY rowid").all()) {
       const m = obj(r.data); if (!m || (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool')) continue;
       const parts = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : [];
-      for (const p of parts) {
+      for (const [partIndex, p] of parts.entries()) {
         if (!p || typeof p !== 'object') continue;
+        const source_id = `cursor-blob:${JSON.stringify([r.source_id, partIndex])}`;
         if (p.type === 'text' && m.role === 'user') {
           // Cursor wraps the person's words in <user_query>; everything else in a user turn is injected context.
           const raw = String(p.text || ''); if (/Ask mode is active/.test(raw)) askMode = true;
           const x = (raw.match(/<user_query>([\s\S]*?)<\/user_query>/)?.[1] ?? (raw.trim().startsWith('<') ? '' : raw)).trim();
-          if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts: end, text: x.slice(0, 600), who: 'human' });
+          if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts: end, source_id, text: x.slice(0, 600), who: 'human' });
         }
-        else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts: end, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
+        else if (p.type === 'text' && m.role === 'assistant' && String(p.text || '').length > 25) ev.push({ k: 'say', ts: end, source_id, text: p.text.slice(0, 400), ...(p.text.length > 400 ? { full: p.text.slice(0, 6000) } : {}) });
         else if (p.type === 'reasoning' && p.text) reasoning.push({ i: ev.length, ts: end, text: String(p.text).slice(0, 6000) });
         else if (p.type === 'tool-call') {
-          const raw = String(p.toolName || 'tool'); const e = { k: 'tool', ts: end, client: 'cursor', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(p.args ?? p.input), err: false, denied: false, errText: '' };
+          const raw = String(p.toolName || 'tool'); const e = { k: 'tool', ts: end, source_id, client: 'cursor', tool: TOOL[raw] || raw, rawTool: raw, target: targetOf(p.args ?? p.input), err: false, denied: false, errText: '' };
           if (p.toolCallId) pend.set(p.toolCallId, e); ev.push(e);
         } else if (p.type === 'tool-result') {
           const e = pend.get(p.toolCallId); if (!e) continue; const res = p.result;
@@ -188,8 +189,8 @@ export async function readCursorIDE(ref) {
     const bubble = d.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');
     for (const h of comp.fullConversationHeadersOnly || []) {
       const b = parseJSON(String(bubble.get(`bubbleId:${id}:${h.bubbleId}`)?.value ?? 'null')); if (!b) continue;
-      const ts = h.createdAt || iso(b.createdAt);
-      if (b.type === 1) { const x = String(b.text || '').trim(); if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts, text: x.slice(0, 600), who: 'human' }); continue; }
+      const ts = h.createdAt || iso(b.createdAt); const source_id = `cursor-ide-bubble:${h.bubbleId}`;
+      if (b.type === 1) { const x = String(b.text || '').trim(); if (x && !HARNESS.test(x)) ev.push({ k: 'ask', ts, source_id, text: x.slice(0, 600), who: 'human' }); continue; }
       if (b.thinking?.text) reasoning.push({ i: ev.length, ts, text: String(b.thinking.text).slice(0, 6000) });
       const t = b.toolFormerData;
       if (t?.name) {
@@ -200,13 +201,13 @@ export async function readCursorIDE(ref) {
         for (const v of [params.target_file, params.file_path]) if (typeof v === 'string' && v.startsWith('/')) paths.push(v);
         const result = typeof t.result === 'string' ? t.result : JSON.stringify(t.result ?? '');
         const err = t.status === 'error'; const denied = t.status === 'cancelled' || t.status === 'rejected';
-        const e = { k: 'tool', ts, client: 'cursor-ide', tool, rawTool: raw, target, err: err || denied, denied, errText: err || denied ? result.slice(0, 400) : '' };
+        const e = { k: 'tool', ts, source_id, client: 'cursor-ide', tool, rawTool: raw, target, err: err || denied, denied, errText: err || denied ? result.slice(0, 400) : '' };
         if (denied) markRejected(e, result);
         if (!e.err && tool === 'Bash') e.outTail = result.slice(-400);
         ev.push(e); continue;
       }
       const x = String(b.text || '').trim();
-      if (x.length > 25) ev.push({ k: 'say', ts, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) });
+      if (x.length > 25) ev.push({ k: 'say', ts, source_id, text: x.slice(0, 400), ...(x.length > 400 ? { full: x.slice(0, 6000) } : {}) });
     }
     const mode = { agent: null, ask: 'plan', plan: 'plan' }[comp.unifiedMode] ?? null;
     const at = ev.map((e) => e.ts).filter(Boolean);

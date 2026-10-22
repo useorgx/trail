@@ -14,10 +14,12 @@ import { spanCost } from './cost.mjs';
 import { repoOf } from './workstreams.mjs';
 import { withLifecycle, SETTLE_MS } from './sync.mjs';
 import { receiptFingerprint } from './integrity.mjs';
+import { assignThreadIdentities } from './identity.mjs';
 const materialFingerprint = (receipt) => {
   const key = 'org.orgx.trail/v1'; const { lifecycle, ...extension } = receipt.extensions?.[key] || {};
   return receiptFingerprint({ ...receipt, extensions: { ...receipt.extensions, [key]: extension } });
 };
+const fileSessionId = (file) => path.basename(file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
 
 export class ByteTail {
   constructor(file) { this.file = file; this.reset(); }
@@ -58,7 +60,15 @@ export class LiveSession {
     if (this.tail) {
       const tail = this.tail.read(); bytes = tail.bytes; offset = tail.offset;
       if (tail.reset) this.reset();
-      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) return { changed: false, bytes, offset, checkpoints: [] };
+      if (!tail.lines.length && (offset > 0 || !this.rebuildCheckpoints)) {
+        if (this.rebuildCheckpoints && offset > 0) {
+          // Record a known reset even while waiting for its first complete replacement record.
+          const id = this.checkpointId || fileSessionId(this.file);
+          const identity = await assignThreadIdentities({ file: this.file, client: this.client, id, events: [], threads: [], persist: this.persist });
+          if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
+        }
+        return { changed: false, bytes, offset, checkpoints: [] };
+      }
       session = await (this.client === 'claude' ? readClaude : readCodex)(this.file, { state: this.parser, lines: tail.lines });
     } else {
       // Mutable JSON snapshots and SQLite exports use their native reader, while keeping the same receipt pipeline.
@@ -91,30 +101,35 @@ export class LiveSession {
     this.seen = session.ev.length;
     // Reasoning and result-only records can change a goal without adding an event.
     if (this.windows.length) affected.add(this.windows.at(-1));
-    const fallbackId = path.basename(this.file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const fallbackId = fileSessionId(this.file);
     const id = (!session.ev.length && !['opencode', 'cursor-ide'].includes(this.client) && fs.statSync(this.file).size === 0 ? this.checkpointId : session.id) || fallbackId;
     const meta = { ...session, id, client: this.client, label: clientLabel(this.client), repo: repoOf(session.cwd), project: path.basename(session.cwd || '') };
     const governed = loadGoverned();
-    const checkpoints = []; let threadBase = 0; let goalBase = 0;
+    const checkpoints = []; let goalBase = 0;
+    if (!this.windows.length) {
+      const identity = await assignThreadIdentities({ file: this.file, client: this.client, id, events: session.ev, threads: [], persist: this.persist, representation: session.format || this.client });
+      if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
+    }
     for (const window of this.windows) {
       if (affected.has(window)) {
         const end = window.end ?? session.ev.length;
         const slice = { ...session, ev: session.ev.slice(window.start, end) };
         const lang = { reasoning: (session.reasoning || []).filter((r) => r.i >= window.start && r.i <= end).map((r) => ({ ...r, i: r.i - window.start })), full: [] };
         const st = steps(slice, lang); const result = threadify(slice);
+        const identity = await assignThreadIdentities({ file: this.file, client: this.client, id, events: session.ev, threads: result.threads, offset: window.start, persist: this.persist, representation: session.format || this.client });
+        if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
+        for (const t of result.threads) { t.id = identity.ids.get(t.id); t.home = identity.ids.get(t.home); t.parent = identity.ids.get(t.parent); t.at += window.start; t.source_id = session.ev[t.at]?.source_id; }
         const localGoals = buildGoals(slice, result, st);
-        const threadId = (t) => t ? `T${Number(t.slice(1)) + threadBase}` : t;
-        for (const t of result.threads) { t.id = threadId(t.id); t.home = threadId(t.home); t.parent = threadId(t.parent); t.spans = (t.spans || []).map(([a, b]) => [a + window.start, b + window.start]); }
+        for (const t of result.threads) { t.spans = (t.spans || []).map(([a, b]) => [a + window.start, b + window.start]); t.backs = (t.backs || []).map((back) => ({ ...back, i: back.i + window.start })); }
         for (const step of st) step.at += window.start;
         for (const goal of localGoals) {
-          goal.id = `G${Number(goal.id.slice(1)) + goalBase}`; goal.root = threadId(goal.root); goal.threads = goal.threads.map(threadId);
+          goal.id = `G${Number(goal.id.slice(1)) + goalBase}`;
           goal.spans = goal.spans.map(([a, b]) => [a + window.start, b + window.start]);
           if (goal.outcome.at !== null) goal.outcome.at += window.start;
           goal.backtracks = goal.backtracks.map((b) => ({ ...b, at: b.at + window.start }));
-          goal.episodes = goal.episodes.map((e) => ({ ...e, thread: threadId(e.thread) }));
           const cost = spanCost(session.usageEvents || [], goal.spans, session.model, this.client); if (cost) goal.cost = cost;
         }
-        const previousThreadCount = window.result?.threads.length;
+        const previousGoalCount = window.goals?.length;
         const goalAt = new Map(); for (const goal of localGoals) for (const [a, b] of goal.spans) for (let i = a; i <= b; i++) goalAt.set(i, goal);
         const contract = CLIENTS[this.client]?.contract; const harness = contract && contract !== 'other' ? contract : this.client;
         const signals = extractSignals(slice, { sessionId: id, harness, repo: meta.repo, receiptIdAt: (i) => { const goal = goalAt.get(i + window.start); return goal ? receiptIdOf(meta, goal.root) : null; } });
@@ -132,8 +147,8 @@ export class LiveSession {
             lifecycle: { ...receipt.extensions['org.orgx.trail/v1'].lifecycle, material_at: new Date(activityAt).toISOString() },
           } },
         }, 'provisional')) : window.receipts;
-        // A late failure can introduce a detour in an older goal. Rebase later IDs to keep them unique.
-        if (previousThreadCount !== undefined && previousThreadCount !== result.threads.length) {
+        // Goal display numbering can change independently of persisted thread/receipt identities.
+        if (previousGoalCount !== undefined && previousGoalCount !== localGoals.length) {
           for (const following of this.windows.slice(this.windows.indexOf(window) + 1)) affected.add(following);
         }
         // Rebuilding can leave the material receipt unchanged when an adjacent goal begins.
@@ -142,7 +157,7 @@ export class LiveSession {
         window.receipts = nextReceipts; window.activityAt = activityAt;
         if (materiallyChanged) checkpoints.push(...window.receipts);
       }
-      threadBase += window.result?.threads.length || 0; goalBase += window.goals?.length || 0;
+      goalBase += window.goals?.length || 0;
     }
     // Reconcile only after a successful rebuild or boundary change, never by scanning receipt history on appends.
     if (this.persist && (this.rebuildCheckpoints || previousWindowCount !== this.windows.length || this.checkpointId !== id)) {

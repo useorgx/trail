@@ -13,6 +13,7 @@ import { clientLabel, CLIENTS } from './clients.mjs';
 import { extractSignals } from './precedent.mjs';
 import { repoOf } from './workstreams.mjs';
 import { costOf, tokensOf, spanCost } from './cost.mjs';
+import { assignThreadIdentities } from './identity.mjs';
 
 let acc = 0;
 setByteListener((n) => { acc += n; if (acc > 8e6) { parentPort.postMessage({ progress: acc }); acc = 0; } });
@@ -22,13 +23,18 @@ parentPort.on('message', async ({ file, client }) => {
   acc = 0;
   try {
     const s = await readSession(file, client);
-    // Empty conversations (drafts, windows opened and closed) are not sessions.
-    if (!s.ev.length) { parentPort.postMessage({ ok: true, skip: true }); return; }
+    // An unavailable native reader has not observed an empty source or a reset.
+    if (s.available === false) { parentPort.postMessage({ ok: true, skip: true }); return; }
     const r = threadify(s);
+    const id = s.id || path.basename(file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
+    const identity = await assignThreadIdentities({ file, client, id, events: s.ev, threads: r.threads, representation: s.format || client });
+    if (identity.conflicts.length) throw new Error(`Thread identity conflicts for ${id}: ${JSON.stringify(identity.conflicts)}`);
+    // Observe empty-source resets for identity allocation without storing an empty session.
+    if (!s.ev.length) { parentPort.postMessage({ ok: true, skip: true }); return; }
+    for (const t of r.threads) { t.id = identity.ids.get(t.id); t.home = identity.ids.get(t.home); t.parent = identity.ids.get(t.parent); t.source_id = s.ev[t.at]?.source_id; }
     // Language the record leaves out goes to a side file; goals are built from per-step facts and tags.
     const full = s.ev.map((e, i) => (e.full ? [i, e.full] : null)).filter(Boolean);
     const lang = { reasoning: s.reasoning || [], full };
-    const id = s.id || path.basename(file).replace(/\.gz$/, '').replace(/\.jsonl$/, '').slice(-36);
     if (lang.reasoning.length || full.length) writeLanguage(id, lang);
     const st = steps(s, lang); const goals = buildGoals(s, r, st, { sessionId: id });
     // Estimated cost from the transcript's own token counts and list prices (src/cost.mjs).
@@ -58,7 +64,7 @@ parentPort.on('message', async ({ file, client }) => {
       lang: { reasoning: lang.reasoning.length, full: full.length }, tags: tagCounts,
       ...(s.usage ? { usage: s.usage, tokens: tokensOf(s.usage, client), cost: costOf(s.usage, s.model, client) } : {}), ...(s.interrupts ? { interrupts: s.interrupts } : {}),
       goals: goals.map((g) => ({ id: g.id, root: g.root, title: g.title, origin: g.origin, threads: g.threads, episodes: g.episodes.map((e) => e.kind), spans: g.spans, outcome: g.outcome, status: g.status, backtracks: g.backtracks, conf: g.conf, ...(g.cost ? { cost: g.cost } : {}), ...(g.checkedAfterChange != null ? { checkedAfterChange: g.checkedAfterChange } : {}), ...(g.jev ? { jev: g.jev, agree: g.agree, corroborated: g.corroborated, corroboration: g.corroboration } : {}) })),
-      threads: r.threads.map((t) => decide({ id: t.id, origin: t.origin, kind: t.kind, title: t.title, ask: t.ask, notes: t.notes, moves: t.moves, backs: t.backs, status: t.status, claim: t.claim, subj: t.subj, errs: t.errs, parent: t.parent, t0: t.t0, t1: t.t1, spans: t.spans || [], feat: t.feat, ...(t.cost ? { cost: t.cost } : {}) })),
+      threads: r.threads.map((t) => decide({ id: t.id, at: t.at, source_id: t.source_id, origin: t.origin, kind: t.kind, title: t.title, ask: t.ask, notes: t.notes, moves: t.moves, backs: t.backs, status: t.status, claim: t.claim, subj: t.subj, errs: t.errs, home: t.home, parent: t.parent, t0: t.t0, t1: t.t1, spans: t.spans || [], feat: t.feat, ...(t.cost ? { cost: t.cost } : {}) })),
     };
     parentPort.postMessage({ ok: true, sess });
   } catch (err) { parentPort.postMessage({ ok: false, error: String(err).slice(0, 200) }); }
