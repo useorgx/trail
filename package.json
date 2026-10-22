@@ -47,6 +47,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@useorgx/agent-work-receipt": "^0.2.0"
+    "@useorgx/agent-work-receipt": "^0.3.0"
   }
 }
