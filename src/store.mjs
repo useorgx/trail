@@ -9,7 +9,7 @@ import { archivedOnly } from './archive.mjs';
 import { discoverCopilot, discoverGemini, discoverDroid } from './adapters-json.mjs';
 import { withIntegrity } from './integrity.mjs';
 
-export const VERSION = 'trail-2.1';
+export const VERSION = 'trail-2.2';
 export const HOME = process.env.TRAIL_HOME || path.join(os.homedir(), '.orgx', 'trail');
 export const P = {
   index: path.join(HOME, 'index.json'),

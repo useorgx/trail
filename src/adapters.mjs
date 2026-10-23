@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import zlib from 'node:zlib';
 import { HARNESS } from './classify.mjs';
 import { USER_REJECTED, markRejected } from './precedent.mjs';
+import { observeOrgxResult, observesOrgxResult, ORGX_RESULT_MAX_BYTES } from './orgx-outputs.mjs';
 
 let onBytes = null;
 export const setByteListener = (fn) => { onBytes = fn; };
@@ -34,7 +35,7 @@ export async function readClaude(file, options = {}) {
   const usageById = state.usageById ||= new Map(); // streamed chunks repeat a message's usage: keep one per message id, placed where it first appeared
   for await (const l of options.lines || lines(file)) {
     if (l.length < 20) continue;
-    if (l.length > 60000 && l.includes('"tool_result"')) {
+    if (l.length > 60000 && l.includes('"tool_result"') && !(l.length <= ORGX_RESULT_MAX_BYTES && observesOrgxResult(pend.get(l.match(/"tool_use_id"\s*:\s*"([^"]+)"/)?.[1])))) {
       const id = l.match(/"tool_use_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id); if (e) { state.dirty.add(e); delete e.pending; const completedAt = l.match(/"timestamp"\s*:\s*"([^"]+)"/)?.[1]; if (completedAt) e.completedAt = completedAt; }
       if (e && /"is_error":true/.test(l)) { const at = l.indexOf('"content"'); e.err = true; e.errText = l.slice(at + 10, at + 410); e.denied = /Permission to use/.test(e.errText); if (USER_REJECTED.test(l.slice(at, at + 2000))) markRejected(e, e.errText); }
       if (id) done.add(id);
@@ -65,6 +66,7 @@ export async function readClaude(file, options = {}) {
         }
         else if (SHIP.test(e.target)) e.out = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300);
         else if (CHECK.test(e.target)) e.outTail = (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(-400);
+        observeOrgxResult(e, Array.isArray(b.content) ? { content: b.content } : b.content, ts);
       } else if (d.type === 'assistant' && b.type === 'thinking' && b.thinking) {
         reasoning.push({ i: ev.length, ts, text: b.thinking.slice(0, FULL) }); // i = the event it precedes
       } else if (d.type === 'assistant' && b.type === 'text' && (b.text || '').length > 25) {
@@ -118,6 +120,7 @@ function codexItem(it, ts, sink) {
       const failed = it.status === 'failed' || /isError['"]?:\s*(True|true)/.test(res);
       const e = { k: 'tool', ts, client: 'codex', tool: `mcp__${it.server}__${it.tool}`, rawTool: `mcp__${it.server}__${it.tool}`, target: String(typeof it.arguments === 'string' ? it.arguments : JSON.stringify(it.arguments ?? '')).slice(0, 240), err: failed, denied: it.status === 'declined', errText: failed ? res.replace(/^\{['"]content['"]:\s*\[\{['"]type['"]:\s*['"]text['"],\s*['"]text['"]:\s*/, '').slice(0, 400) : '' };
       if (it.status === 'declined') markRejected(e, 'Declined by the user');
+      if (failed || ['completed', 'succeeded', 'declined'].includes(it.status)) observeOrgxResult(e, it.result, ts);
       ev.push(e);
       break;
     }
@@ -164,7 +167,7 @@ export async function readCodex(file, options = {}) {
       if (ap) { const m = { never: 'bypassPermissions', 'on-request': 'default', untrusted: 'default', 'on-failure': 'auto' }[ap] || ap; modes[m] = (modes[m] || 0) + 1; }
       continue;
     }
-    if (l.length > 80000 && /_call_output"/.test(l.slice(0, 400))) {
+    if (l.length > 80000 && /_call_output"/.test(l.slice(0, 400)) && !(l.length <= ORGX_RESULT_MAX_BYTES && observesOrgxResult(pend.get(l.match(/"call_id"\s*:\s*"([^"]+)"/)?.[1])))) {
       const id = l.match(/"call_id":"([^"]+)"/)?.[1]; const e = id && pend.get(id); if (e) { state.dirty.add(e); delete e.pending; const completedAt = l.match(/"timestamp"\s*:\s*"([^"]+)"/)?.[1]; if (completedAt) e.completedAt = completedAt; }
       if (e) { const tail = l.slice(0, 3000); if (/Script failed|exited with code [1-9]|Exit code:? [1-9]/.test(tail)) { e.err = true; const at = tail.indexOf('output'); e.errText = tail.slice(at, at + 400); } }
       continue;
@@ -188,7 +191,7 @@ export async function readCodex(file, options = {}) {
       pend.set(p.call_id, ee); ev.push(ee);
     } else if (/_call_output$/.test(p.type || '')) {
       const e = pend.get(p.call_id); if (!e) continue; state.dirty.add(e); delete e.pending; if (ts) e.completedAt = ts;
-      const o = typeof p.output === 'string' ? p.output : (p.output || []).map((x) => x.text || '').join(' ');
+      const o = typeof p.output === 'string' ? p.output : Array.isArray(p.output) ? p.output.map((x) => x.text || '').join(' ') : JSON.stringify(p.output ?? '');
       const head3 = o.slice(0, 3000);
       if (!/^Script failed|exited with code [1-9]|Exit code:? [1-9]|"exit_code":\s*[1-9]/.test(head3) && SHIP.test(e.target)) e.out = head3.slice(0, 300);
       if (CHECK.test(e.target)) e.outTail = o.slice(-400);
@@ -200,6 +203,7 @@ export async function readCodex(file, options = {}) {
         e.denied = /rejected by (the )?user|approval (was )?(denied|rejected)|sandbox.*denied|Operation not permitted/i.test(o);
         if (USER_REJECTED.test(head3) || /approval (was )?(denied|rejected)/i.test(head3)) markRejected(e, head3);
       }
+      observeOrgxResult(e, Array.isArray(p.output) ? { content: p.output } : p.output, ts);
     }
   }
   // Structured items when the rollout has them (current Codex), raw items otherwise (older rollouts).

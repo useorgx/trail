@@ -29,7 +29,7 @@ export function privacyText(C) {
     `  secrets    ${r.sessions.redactions + r.language.redactions} redacted before storing · ${r.ruleset.rules} rules (${r.ruleset.source} ${r.ruleset.commit} + OrgX/OpenRouter keys)`,
     '',
     `${C.b}What leaves this machine${C.r}  ${C.dim}(nothing, unless you run one of these)${C.r}`,
-    `  trail sync              counts, move strings and PR numbers for each thread; no text, no paths, no prompts`,
+    `  trail sync              counts, move strings, PR numbers and observed OrgX artifact UUIDs; no text, no paths, no prompts`,
     `  trail sync --with-titles  adds thread titles${r.pii.on ? ' (masked by Privacy Filter first)' : ''}`,
     `  trail deepen            agent messages, reasoning and goal evidence, after a quote you confirm${r.pii.on ? '; personal data masked by Privacy Filter first' : ''}`,
     `  trail adopt / guard     nothing: they write a local file, with a backup`,
