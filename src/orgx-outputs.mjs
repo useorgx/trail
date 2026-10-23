@@ -3,6 +3,7 @@
 const ATTACH = new Set(['orgx_attach', 'orgx_attach_artifact', 'orgx_update_work']);
 const CONTEXT = new Set(['orgx_bootstrap', 'orgx_get_workspace_context']);
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+const isUuid = value => typeof value === 'string' && UUID.test(value);
 const ISO = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const timestamp = value => typeof value === 'string' && ISO.test(value) && Number.isFinite(Date.parse(value)) &&
   new Date(value.slice(0, 10) + 'T00:00:00Z').toISOString().slice(0, 10) === value.slice(0, 10);
@@ -17,7 +18,7 @@ export const observesOrgxResult = event => ATTACH.has(orgxTool(event)) || isOrgx
 export function orgxArtifactRefs(value) {
   const refs = new Map();
   for (const ref of Array.isArray(value) ? value : []) {
-    if (!ref || !UUID.test(ref.artifact_id || '') || !ATTACH.has(ref.tool) || !timestamp(ref.observed_at)) continue;
+    if (!ref || !isUuid(ref.artifact_id) || !ATTACH.has(ref.tool) || !timestamp(ref.observed_at)) continue;
     const id = ref.artifact_id.toLowerCase();
     refs.set(id, { artifact_id: id, tool: ref.tool, observed_at: new Date(ref.observed_at).toISOString() });
   }
@@ -58,7 +59,7 @@ export function observeOrgxResult(event, result, observedAt = event?.completedAt
       (Array.isArray(error.content) ? error.content.find(part => part?.type === 'text')?.text : '') || 'OrgX tool returned an error').slice(0, 400);
   }
   if (!ATTACH.has(orgxTool(event)) || event.err || event.denied || event.rejected || event.pending || error) return;
-  const ids = [...new Set(payloads.flatMap(body => UUID.test(body.artifact?.id || '') ? [body.artifact.id.toLowerCase()] : []))];
+  const ids = [...new Set(payloads.flatMap(body => isUuid(body.artifact?.id) ? [body.artifact.id.toLowerCase()] : []))];
   // Conflicting acknowledgments do not identify one attached artifact.
   if (ids.length !== 1 || !timestamp(observedAt)) return;
   event.orgx_artifact = { artifact_id: ids[0], tool: orgxTool(event), observed_at: new Date(observedAt).toISOString() };
@@ -68,7 +69,7 @@ export function observedThreadArtifacts(events, spans) {
   const refs = new Map();
   for (const [start, end] of spans || []) for (let i = start; i <= end; i++) {
     const event = events[i], ref = event?.orgx_artifact;
-    if (!ref || event.err || event.pending || event.denied || event.rejected || !UUID.test(ref.artifact_id) || !ATTACH.has(ref.tool)) continue;
+    if (!ref || event.err || event.pending || event.denied || event.rejected || !isUuid(ref.artifact_id) || !ATTACH.has(ref.tool)) continue;
     refs.set(ref.artifact_id, { artifact_id: ref.artifact_id, tool: ref.tool, observed_at: ref.observed_at });
   }
   return orgxArtifactRefs([...refs.values()]);

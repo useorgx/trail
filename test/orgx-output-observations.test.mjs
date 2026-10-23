@@ -65,6 +65,8 @@ test('errors, ambiguous responses, invalid identifiers and prose-wrapped JSON do
     { isError: true, structuredContent: { artifact: { id: A } } },
     { ok: false, artifact: { id: A } },
     { artifact: { id: 'javascript:alert(1)' } },
+    { artifact: { id: [A] } },
+    { artifact: { id: { value: A } } },
     { artifact_id: A },
     { id: A },
     { artifact: { id: A }, data: { artifact: { id: B } } },
@@ -116,7 +118,7 @@ test('Codex raw MCP outputs accept structured envelopes and surface explicit con
 });
 
 test('stored typed references drop arbitrary URLs, extra content and invalid timestamps', () => {
-  assert.deepEqual(orgxArtifactRefs([{ ...ref(), url: 'javascript:alert(1)', name: 'Private title' }, ref(), { ...ref(B), observed_at: 'unknown' }, { ...ref(B), tool: 'orgx_inspect' }]), [ref()]);
+  assert.deepEqual(orgxArtifactRefs([{ ...ref(), url: 'javascript:alert(1)', name: 'Private title' }, ref(), { ...ref(), artifact_id: [A] }, { ...ref(B), observed_at: 'unknown' }, { ...ref(B), tool: 'orgx_inspect' }]), [ref()]);
   const event = { rawTool: 'mcp__orgx__orgx_attach', ts: 'unknown', err: false };
   observeOrgxResult(event, { artifact: { id: A } });
   assert.equal(event.orgx_artifact, undefined);
