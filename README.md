@@ -141,6 +141,14 @@ After `trail connect`, `trail receipt-hook install` enables automatic Claude Cod
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
 
+### OrgX output links
+
+Claude Code and Codex attachment responses can now link a thread to its OrgX output in the local ledger. Trail keeps the artifact UUID, attachment tool and observed response time for up to 20 outputs per thread. Review and acceptance remain recorded in OrgX.
+
+`trail sync` includes those typed references in the outline. OrgX checks the authenticated owner and workspace before accepting them. `--dry-run` shows the references that would be sent; artifact bodies and titles stay local unless another selected upload mode includes them. Uploads are limited to 1,000 distinct output references per request.
+
+A failed OrgX context call appears as the named wall “OrgX context could not be loaded,” with guidance to state the missing context and avoid inventing team, budget or open work. Existing transcripts are reread when this version rebuilds its cache; stable thread aliases are preserved.
+
 ## How it works
 
 1. Trail reads each session into requests, agent messages, and tool calls. Reasoning and full messages go to a separate local file (`~/.orgx/trail/language`).
@@ -188,7 +196,7 @@ Trail is built on other people's ideas. None of them endorse it; this is what we
 
 `trail privacy` shows what trail keeps, where, who can read it, and what each command sends, counted from the files.
 Secrets are removed before anything is stored or sent, using gitleaks' 221 provider rules (plus OrgX and OpenRouter keys);
-trail's folder is readable by you only. Uploads are explicit: `trail sync` sends counts and move strings
+trail's folder is readable by you only. Uploads are explicit: `trail sync` sends counts, move strings, PR numbers and observed OrgX artifact UUID references
 (`--with-titles` adds titles); `sync --receipts`, `watch --receipts`, and opt-in receipt hooks can send asks, summaries,
 and evidence excerpts. `trail deepen` sends analysis text after a quote you confirm. Review the command table before
 enabling these flows. For names, emails, phones and addresses too,

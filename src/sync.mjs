@@ -10,6 +10,7 @@ import { loadSessions, loadAdoptions, loadSignals, HOME, VERSION } from './store
 import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
 import { wallById } from './walls.mjs';
+import { orgxArtifactRefs } from './orgx-outputs.mjs';
 import { piiEnabled, maskPii } from './pii.mjs';
 import { receiptFingerprint, withIntegrity } from './integrity.mjs';
 import { redactDeep } from './redact.mjs';
@@ -74,8 +75,10 @@ export function toSession(s, bounded) {
     threads: s.threads.slice(0, 500).map((t) => ({
       id: outlineThreadId(t.id), origin: ORIGIN(t), status: STATUS[t.status] || 'unclear',
       moves: clampMoves(t.moves.replace(/[^prchsdXD]/g, '')), backtracks: t.backs.length,
-      // Only references travel: PR numbers. Commit messages and free text stay on the machine.
+      // Only references travel: PR numbers and typed OrgX artifact observations.
+      // Commit messages and free text stay on the machine.
       claims: (t.claim || []).filter((c) => /^PR #\d{1,7}$/.test(c)).slice(0, 10),
+      ...(orgxArtifactRefs(t.orgx_artifacts).length ? { orgx_artifacts: orgxArtifactRefs(t.orgx_artifacts) } : {}),
       started_at: iso(t.t0, s.start), ended_at: iso(t.t1, s.end || s.start),
       p_dropped: t.p_abandon ?? null,
       ...(bounded && t.title ? { title: String(t.title).slice(0, 120) } : {}),
@@ -84,7 +87,11 @@ export function toSession(s, bounded) {
   };
 }
 
-const fingerprint = (s) => `${s.tools}:${s.threads.length}:${s.end}`;
+const fingerprint = (s) => {
+  const base = `${s.tools}:${s.threads.length}:${s.end}`;
+  const refs = s.threads.map((t) => orgxArtifactRefs(t.orgx_artifacts));
+  return refs.some((items) => items.length) ? `${base}:${sha(JSON.stringify(refs)).slice(0, 16)}` : base;
+};
 
 export function sync(options = {}) { return options.dryRun ? performOutlineSync(options) : withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
 async function performOutlineSync({ dryRun = false, withTitles = false, base, limit, fetchImpl = fetch } = {}) {
@@ -115,7 +122,14 @@ async function performOutlineSync({ dryRun = false, withTitles = false, base, li
   const envelope = (chunk, withAdoptions) => ({ schema_version: 'orgx-trail-threads/v1', privacy: bounded ? 'bounded' : 'metadata_only',
     source: { tool: '@useorgx/trail', version: VERSION, classifier: { sha: VERSION, model: mi?.name ?? null } },
     sessions: chunk.map((s) => toSession(s, bounded)), adoptions: withAdoptions ? adoptions : [] });
-  const chunks = []; for (let i = 0; i < todo.length; i += CHUNK) chunks.push(todo.slice(i, i + CHUNK));
+  const chunks = []; let chunk = [], artifactIds = new Set();
+  for (const session of todo) {
+    const ids = session.threads.flatMap((thread) => orgxArtifactRefs(thread.orgx_artifacts).map((ref) => ref.artifact_id));
+    if (new Set(ids).size > 1000) throw new Error('A session exceeds the 1,000 observed OrgX output references supported by one upload. Nothing was sent.');
+    if (chunk.length >= CHUNK || new Set([...artifactIds, ...ids]).size > 1000) { chunks.push(chunk); chunk = []; artifactIds = new Set(); }
+    chunk.push(session); for (const id of ids) artifactIds.add(id);
+  }
+  if (chunk.length) chunks.push(chunk);
   if (!chunks.length && adoptions.length) chunks.push([]);
   const url = `${root}/api/v1/trail/uploads`;
   if (dryRun) {
