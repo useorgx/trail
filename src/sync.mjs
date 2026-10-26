@@ -225,13 +225,14 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   const headers = { 'content-type': 'application/json', ...authHeaders(cred) };
   let sent = 0, duplicate = 0; const refused = [];
   // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
-  let batch = true;
+  let batch = true; let rateLimits = 0;
   for (let i = 0; i < todo.length;) {
     const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
     const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id, receiptFingerprint(r)) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id, receiptFingerprint(chunk[0])) };
     const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify(body) });
     if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { refused.push({ id: chunk[0].receipt_id, error: 'rate_limit_retry_exhausted' }); break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers.get('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     const out = await res.json().catch(() => ({}));
     if (res.status === 409 && out.error?.code === 'workspace_receipt_import_limit_reached') { refused.push({ id: chunk[0].receipt_id, error: out.error.message }); break; }
     const results = batch ? (out.results || []) : [{ ...out, ok: res.ok }];
@@ -260,12 +261,14 @@ function unsentSignals(state) {
 export async function sendSignals({ root, headers, state, save = () => {}, signals, fetchImpl = fetch }) {
   state.signalsSent ||= {};
   const out = { url: `${root}${SIGNALS_PATH}`, sent: 0, pending: signals.length, unsupported: false, error: null };
+  let rateLimits = 0;
   for (let i = 0; i < signals.length;) {
     const chunk = signals.slice(i, i + SIGNAL_BATCH);
     let res;
     try { res = await fetchImpl(out.url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
     if (res.status === 404) { out.unsupported = true; break; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers?.get?.('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { out.error = 'rate_limit_retry_exhausted'; break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers?.get?.('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     if (!res.ok) { const b = await res.json().catch(() => ({})); out.error = `${res.status} ${b.error?.code || b.error || 'refused'}`.slice(0, 200); break; }
     const at = new Date().toISOString(); for (const x of chunk) state.signalsSent[x.signalId] = at;
     out.sent += chunk.length; save(); i += chunk.length;
