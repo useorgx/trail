@@ -202,6 +202,7 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
     trajectory: (goal.backtracks || []).slice(0, 100).map((b, i) => ({ id: `turn-${i + 1}`, kind: 'change_of_course', summary: `Changed approach after ${TRIGGER_WORDS[b.trigger] || 'reconsidering'} (step ${b.at}).`, trigger: TRIGGER[b.trigger] || 'self', ...(actionIds.has(`step-${b.at}`) ? { action_ids: [`step-${b.at}`] } : {}), ...(typeof goal.conf?.backtracks === 'number' ? { confidence: +goal.conf.backtracks.toFixed(2) } : {}) })),
     extensions: { [EXT]: {
       goal_id: goal.id, root_thread: goal.root, origin: goal.origin, cwd: session.cwd || null, repo: session.repo || null, project: session.project || null,
+      coverage: receiptCoverage(mine, actions, arts, evidence),
       outcome_kind: goal.outcome?.kind || 'unclear',
       confidence: { outcome: goal.conf?.outcome ?? null, boundary: goal.conf?.boundary ?? null, backtracks: goal.conf?.backtracks ?? null, criteria: checked.length ? +Math.min(...checked.map((c) => c.confidence)).toFixed(2) : null },
       criteria: checked.map(({ id, kind, text, status, confidence, evidence_ids }) => ({ id, kind, text, status, confidence, evidence_ids })),
@@ -218,4 +219,23 @@ export function buildReceipt(session, goal, steps, thread, precedent = {}) {
     receipt.extensions[EXT].review_error = String(err?.message || err).slice(0, 200);
   }
   return withIntegrity(receipt);
+}
+
+/** Coverage of the provided steps, never a completeness claim about the original client history. */
+function receiptCoverage(mine, actions, artifacts, evidence) {
+  const tools = mine.filter((x) => x.kind === 'tool'); const messages = mine.filter((x) => x.kind === 'ask' || x.kind === 'say');
+  const files = new Set(tools.filter((x) => x.action === 'edit' && x.target && !['fail', 'pending'].includes(x.result)).map((x) => x.target));
+  const section = (total, returned, limit) => ({ total, returned, limit, truncated: total > returned });
+  const sections = {
+    actions: section(tools.length, tools.length ? actions.length : 0, 300),
+    edited_files: section(files.size, artifacts.filter((a) => a.ref?.type === 'file').length, 100),
+    conversation: section(messages.length, Math.min(messages.length, 400), 400),
+    inputs: section(mine.filter((x) => x.kind === 'ask').length, Math.min(mine.filter((x) => x.kind === 'ask').length, 50), 50),
+    evidence: { total: evidence.length, returned: evidence.length, excerpt_limit: 1200, source_availability: 'not_loaded' },
+  };
+  const omitted_ranges = Object.entries(sections).filter(([, s]) => s.truncated).map(([section, s]) => ({ section, reason: 'receipt_limit', count: s.total - s.returned }));
+  // Tool output is already clipped by steps(); its upstream total is unknown.
+  const clipped = mine.filter((x) => String(x.text || '').length > 2000 || String(x.out || '').length >= 300).length;
+  return { status: omitted_ranges.length || clipped ? 'partial' : 'complete', scope: 'provided extraction steps', source_status: 'unknown',
+    sections, omitted_ranges, excerpt_clipping: clipped ? 'known_or_possible' : 'unknown', missing_sources: ['original_client_history'] };
 }

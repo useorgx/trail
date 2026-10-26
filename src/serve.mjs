@@ -10,6 +10,8 @@ import { loadSessions, loadAdoptions, P } from './store.mjs';
 import { corpus } from './metrics.mjs';
 import { ruleFor } from './adopt.mjs';
 import { actionFor, effectText } from './actions.mjs';
+import { ledger } from './ledger.mjs';
+import { receiptDetail, search, workstreamDetail } from './search.mjs';
 
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'index.html');
 
@@ -31,6 +33,25 @@ export async function serve({ port = 4747 } = {}) {
     if (!okHost(req.headers.host) || u.searchParams.get('k') !== token) { res.writeHead(403).end('forbidden'); return; }
     const send = (type, body) => { res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(body); };
     if (u.pathname === '/') send('text/html; charset=utf-8', fs.readFileSync(WEB, 'utf8'));
+    else if (u.pathname === '/receipts.html') send('text/html; charset=utf-8', fs.readFileSync(path.join(path.dirname(WEB), 'receipts.html'), 'utf8'));
+    else if (u.pathname.startsWith('/api/v1/')) {
+      if (req.method !== 'GET') { res.writeHead(405).end('{}'); return; }
+      try {
+        const L = ledger({ fresh: true }); let value;
+        if (u.pathname === '/api/v1/receipts') {
+          const limit = Math.min(100, Math.max(1, Number(u.searchParams.get('limit')) || 20));
+          const offset = Math.min(1000000, Math.max(0, Math.floor(Number(u.searchParams.get('offset')) || 0)));
+          const matches = search(u.searchParams.get('q') || '', { L, limit: offset + limit });
+          value = { schema_version: 'org.orgx.trail.inspection/v1', results: matches.results.slice(offset), query: matches.query,
+            coverage: { total: matches.total, returned: matches.results.slice(offset).length, limit, offset, truncated: matches.total > offset + limit,
+              next_offset: matches.total > offset + limit ? offset + limit : null, scope: 'local lexical search' }, as_of: new Date().toISOString() };
+        } else if (u.pathname === '/api/v1/receipt') value = receiptDetail(u.searchParams.get('id') || '', L);
+        else if (u.pathname === '/api/v1/workstream') value = workstreamDetail(u.searchParams.get('id') || '', L);
+        else { res.writeHead(404).end('{}'); return; }
+        if (!value) { res.writeHead(404).end('{}'); return; }
+        send('application/json', JSON.stringify(value));
+      } catch (error) { res.writeHead(error.code === 'AMBIGUOUS_ID' ? 409 : 500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: error.code === 'AMBIGUOUS_ID' ? error.message : 'Receipt read failed; try again.' })); }
+    }
     else if (u.pathname === '/data.json') send('application/json', JSON.stringify(ledgerData()));
     else if (u.pathname === '/thread') {
       const sid = (u.searchParams.get('s') || '').replace(/[^\w-]/g, ''); const tid = (u.searchParams.get('t') || '').replace(/[^\w]/g, '');
