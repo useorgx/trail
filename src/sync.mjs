@@ -55,7 +55,7 @@ const ORIGIN = (t) => (t.origin === 'surprise' ? ({ wall: 'wall', recovery: 'rec
 const STATUS = { outcome: 'done', abandoned: 'dropped', open: 'open', parked: 'parked', 'outcome?': 'unclear' };
 
 export { credential, baseUrl } from './credentials.mjs';
-import { credential, baseUrl } from './credentials.mjs';
+import { credential, baseUrl, authHeaders } from './credentials.mjs';
 
 const iso = (t, d) => { const x = Date.parse(t || d); return Number.isFinite(x) ? new Date(x).toISOString() : new Date(0).toISOString(); };
 const clampMoves = (m) => (m.length <= 400 ? m : m.slice(0, 200) + m.slice(-200));
@@ -100,7 +100,7 @@ async function performOutlineSync({ dryRun = false, withTitles = false, base, li
   const cred = dryRun ? null : credential();
   if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
   if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
-  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.key);
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.scope || cred.key);
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
   let todo = limit ? sessions.slice(-limit) : sessions;
   // Titles are the only text a bounded upload carries: with personal-data masking on, they go through
@@ -138,7 +138,7 @@ async function performOutlineSync({ dryRun = false, withTitles = false, base, li
   }
   let sent = 0, threads = 0; let workspace = null;
   for (let i = 0; i < chunks.length; i++) {
-    const res = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
+    const res = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { 'content-type': 'application/json', ...authHeaders(cred) }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`OrgX refused the upload (${res.status}): ${body.error || 'unknown error'}${body.issues ? ' ' + JSON.stringify(body.issues.slice(0, 2)) : ''}`);
     sent += chunks[i].length; threads += body.data?.threads ?? 0; workspace = body.data?.workspaceId ?? workspace;
@@ -198,7 +198,7 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   const cred = dryRun ? null : credential();
   if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
   if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
-  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.key);
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.scope || cred.key);
   const L = receipts ? null : ledger({ persist: !dryRun, fresh: dryRun });
   const source = receipts || L.receipts;
   const settled = now - SETTLE_MS;
@@ -222,16 +222,17 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   state.signalsSent ||= {};
   const signals = lane === 'provisional' ? [] : unsentSignals(state);
   if (dryRun) return { dryRun: true, url, scopeKnown, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
-  const headers = { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` };
+  const headers = { 'content-type': 'application/json', ...authHeaders(cred) };
   let sent = 0, duplicate = 0; const refused = [];
   // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
-  let batch = true;
+  let batch = true; let rateLimits = 0;
   for (let i = 0; i < todo.length;) {
     const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
     const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id, receiptFingerprint(r)) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id, receiptFingerprint(chunk[0])) };
-    const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify(body) });
     if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { refused.push({ id: chunk[0].receipt_id, error: 'rate_limit_retry_exhausted' }); break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers.get('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     const out = await res.json().catch(() => ({}));
     if (res.status === 409 && out.error?.code === 'workspace_receipt_import_limit_reached') { refused.push({ id: chunk[0].receipt_id, error: out.error.message }); break; }
     const results = batch ? (out.results || []) : [{ ...out, ok: res.ok }];
@@ -260,12 +261,14 @@ function unsentSignals(state) {
 export async function sendSignals({ root, headers, state, save = () => {}, signals, fetchImpl = fetch }) {
   state.signalsSent ||= {};
   const out = { url: `${root}${SIGNALS_PATH}`, sent: 0, pending: signals.length, unsupported: false, error: null };
+  let rateLimits = 0;
   for (let i = 0; i < signals.length;) {
     const chunk = signals.slice(i, i + SIGNAL_BATCH);
     let res;
-    try { res = await fetchImpl(out.url, { method: 'POST', headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
+    try { res = await fetchImpl(out.url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
     if (res.status === 404) { out.unsupported = true; break; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers?.get?.('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { out.error = 'rate_limit_retry_exhausted'; break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers?.get?.('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     if (!res.ok) { const b = await res.json().catch(() => ({})); out.error = `${res.status} ${b.error?.code || b.error || 'refused'}`.slice(0, 200); break; }
     const at = new Date().toISOString(); for (const x of chunk) state.signalsSent[x.signalId] = at;
     out.sent += chunk.length; save(); i += chunk.length;

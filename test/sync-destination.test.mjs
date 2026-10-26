@@ -25,6 +25,19 @@ const receipt = buildReceipt({ ...source, client: 'claude', id: 'destination-fix
 const statePath = path.join(home, 'sync.json');
 const readState = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
 
+test('persistent rate limits leave receipts retryable after bounded attempts', async () => {
+  let attempts = 0;
+  const result = await syncReceipts({ base: 'https://rate-limit.example', receipts: [receipt], lane: 'provisional', fetchImpl: async () => {
+    attempts++;
+    return new Response('{}', { status: 429, headers: { 'retry-after': '0' } });
+  } });
+  assert.equal(attempts, 3);
+  assert.equal(result.receipts, 0);
+  assert.equal(result.refused[0].error, 'rate_limit_retry_exhausted');
+  const retried = await syncReceipts({ base: 'https://rate-limit.example', receipts: [receipt], lane: 'provisional', fetchImpl: transport().fetchImpl });
+  assert.equal(retried.receipts, 1);
+});
+
 beforeEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
   ensure();
