@@ -6,6 +6,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { processOwner, ownerAlive } from './process-lock.mjs';
 import { HOME } from './store.mjs';
 import { settingsPath } from './guard.mjs';
 import { startLiveCapture } from './live.mjs';
@@ -93,12 +94,12 @@ export async function receiptHookWorker({ captureImpl = startLiveCapture } = {})
   try { await dispatch({ ping: true }); return null; } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ECONNREFUSED') throw error; }
   const token = crypto.randomUUID();
   for (;;) {
-    try { const fd = fs.openSync(LOCK, 'wx', 0o600); try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token })); } finally { fs.closeSync(fd); } break; }
+    try { const fd = fs.openSync(LOCK, 'wx', 0o600); try { fs.writeFileSync(fd, JSON.stringify({ ...processOwner(), token })); } finally { fs.closeSync(fd); } break; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
       let owner; try { owner = read(LOCK, null); } catch { return null; }
       if (!Number.isInteger(owner?.pid) || owner.pid < 1) return null; // the owner may still be writing its lock
-      try { process.kill(owner.pid, 0); return null; } catch (probe) { if (probe.code !== 'ESRCH') return null; }
+      if (ownerAlive(owner)) return null;
       // Only remove the same stale owner observed above, never a replacement lock.
       if (read(LOCK, null)?.token === owner.token) { try { fs.unlinkSync(LOCK); } catch (unlink) { if (unlink.code !== 'ENOENT') throw unlink; } }
     }

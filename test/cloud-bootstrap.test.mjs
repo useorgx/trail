@@ -14,8 +14,25 @@ process.env.TRAIL_CLAUDE_SETTINGS = path.join(home, '.claude', 'settings.json');
 delete process.env.ORGX_API_KEY;
 const { installReceiptHooks, uninstallReceiptHooks, receiptHookStatus, runReceiptHook, recordReceiptDelivery } = await import('../src/receipt-hooks.mjs');
 const { credential, authHeaders, baseUrl } = await import('../src/credentials.mjs');
+const { processOwner, ownerAlive, withProcessLock } = await import('../src/process-lock.mjs');
 const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
 after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+test('restored lock ownership uses process birth and preserves live owners', async () => {
+  const owner = processOwner();
+  assert.equal(ownerAlive(owner), true);
+  if (owner.bootId) {
+    assert.equal(ownerAlive({ ...owner, bootId: 'previous-vm-boot' }), false);
+    const lock = path.join(home, 'restored.lock');
+    fs.writeFileSync(lock, JSON.stringify({ ...owner, bootId: 'previous-vm-boot', token: 'stale' }));
+    assert.equal(await withProcessLock(lock, async () => 'recovered', { timeoutMs: 50 }), 'recovered');
+    assert.equal(fs.existsSync(lock), false);
+  }
+  const live = path.join(home, 'live.lock');
+  fs.writeFileSync(live, JSON.stringify({ ...owner, token: 'live-owner' }));
+  await assert.rejects(withProcessLock(live, async () => assert.fail('live ownership stolen'), { timeoutMs: 25 }), /Another Trail/);
+  assert.equal(JSON.parse(fs.readFileSync(live, 'utf8')).token, 'live-owner');
+});
 
 test('unattended preparation requires content consent, no credential, and preserves both clients', async () => {
   assert.throws(() => installReceiptHooks(bin, { prepare: true }), /consent content/);
