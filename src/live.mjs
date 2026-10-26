@@ -187,7 +187,7 @@ export async function receiptHook(input, { syncImpl, ...options } = {}) {
 }
 
 /** File changes wake capture immediately; uploads are queued separately so network time cannot stall the view. */
-export async function startLiveCapture(file, client, { receipts = false, base, onUpdate = () => {}, onError = () => {}, syncImpl, settleMs = SETTLE_MS, persist = true } = {}) {
+export async function startLiveCapture(file, client, { receipts = false, base, onUpdate = () => {}, onError = () => {}, onDelivery = () => {}, syncImpl, settleMs = SETTLE_MS, persist = true } = {}) {
   const live = new LiveSession(file, client, { persist });
   const sync = syncImpl || (await import('./sync.mjs')).syncReceipts;
   let closed = false; let working = false; let dirty = false; let settleTimer; let retryTimer;
@@ -199,6 +199,7 @@ export async function startLiveCapture(file, client, { receipts = false, base, o
       try {
         const result = await sync({ base, receipts: documents, lane, limit: documents.length, now: Date.now() + SETTLE_MS - settleMs });
         if (result.refused?.length) throw new Error(`Receipt upload refused: ${JSON.stringify(result.refused)}`);
+        onDelivery(result);
         retryDelay = 1000;
       } catch (error) {
         onError(error); clearTimeout(retryTimer);

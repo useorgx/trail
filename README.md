@@ -209,3 +209,41 @@ Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDay
 Everything lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.
 
 Built by [OrgX](https://useorgx.com).
+# Cloud agents
+
+Prepare receipt hooks before the cloud client starts, without a credential or
+existing transcript history:
+
+```sh
+trail receipt-hook prepare --client claude --consent content
+# For Codex, use --client codex. Native hook trust is still required.
+```
+
+`--consent content` explicitly authorizes runtime uploads of redacted prompts,
+summaries, commands, output excerpts and human corrections. Personal-data
+masking is a separate `trail privacy --pii on` setting. Ordinary installation
+does not enable this preparation mode. The command writes static configuration;
+it does not log in, upload, or start a capture worker. Runtime events start the
+existing incremental worker, which retries refused uploads using persisted
+checkpoints and destination-scoped acknowledgements.
+
+Supply `ORGX_API_KEY` through the host's runtime secret controls. For proxy
+delivery, set `ORGX_AUTH_MODE=proxy-placeholder` or `proxy-header`, and set
+`ORGX_AUTH_SCOPE` to `<workspace-id>:<actor-id>`. Header mode sends no local
+Authorization header; placeholder mode sends the placeholder unchanged. Both
+skip stored credentials. Preserve the platform proxy and CA trust. Proxy
+environment support requires Node 22.21+; a configured mode is not a verified
+connection.
+
+Use `trail receipt-hook status --client claude|codex` to inspect configuration,
+and `trail receipt-hook uninstall --client claude|codex` to remove that client's
+handlers. Uninstall preserves local checkpoints and other clients' hooks.
+The OrgX Wizard's `orgx cloud recipe` generates the complete pinned install,
+startup and secret configuration. See the
+[cloud agent guide](https://docs.useorgx.com/guides/cloud-agents).
+
+Automatic receipts need a supported native hook payload with `transcript_path`
+or `transcriptPath`. A missing transcript cannot produce receipts. Local HTTP
+responses, receipt persistence, and human acceptance remain separate evidence.
+Do not snapshot task history, credentials, worker locks or pending receipts
+into a shared image.
