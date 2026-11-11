@@ -107,6 +107,18 @@ Local scanning, the demo, browser UI, and MCP require no account or paid model. 
 | `trail sync` | send session outlines, never transcripts, to OrgX; `--dry-run` shows exactly what would be sent |
 | `trail sync --receipts` | send Agent Work Receipts to your OrgX workspace, where they join your team's work, map to your initiatives, and become searchable by agents; opt in, `--dry-run` first. Also sends the judgments you made along the way (corrections, rejected tool calls, denials, rules you stated) so OrgX can turn them into precedents; they are kept locally in `~/.orgx/trail/precedent-candidates.jsonl` until then |
 
+Sync acknowledgements are separate for each normalized OrgX base URL and sign-in
+credential. Switching destinations or credentials sends that scope's missing
+outlines, receipts, and judgment signals; returning to a previous scope reuses
+its acknowledgements. Old acknowledgement files without a known scope safely
+re-send once, using the existing server idempotency rules. Credentials are never
+written to the sync state.
+
+Dry runs do not write sync state, locks, or a workstream snapshot. They do not
+open the keychain or require sign-in. With `ORGX_API_KEY` already set, the preview
+uses that credential's acknowledgements; otherwise its backlog is conservative
+and includes work that another sign-in may already have sent.
+
 ### Deliver a ratified OrgX method
 
 `trail methods list --workspace <workspace-id>` reads a current canonical method index using the OrgX sign-in from `trail connect` or `ORGX_API_KEY`. This command does not read session history. Copy the selected method's ID, version and digest into a preview, which fetches its full operational instructions and provenance:
@@ -128,6 +140,14 @@ Successful publication reports `method.delivered` to OrgX as a producer report w
 After `trail connect`, `trail receipt-hook install` enables automatic Claude Code uploads through UserPromptSubmit, PostToolUse and Stop hooks. A private local worker retains the byte cursor and pending calls across hook invocations. `trail receipt-hook status` shows the integration, and `trail receipt-hook uninstall` removes it while retaining your other hooks and settings. Watch and hook uploads carry the same asks, summaries and excerpts as `trail sync --receipts`, with secret redaction and your configured personal-data masking.
 
 In the explorer, on a wall: `c` copies a prompt for your agent, `r` the rule, `x` the command, `a` adopts it.
+
+### OrgX output links
+
+Claude Code and Codex attachment responses can now link a thread to its OrgX output in the local ledger. Trail keeps the artifact UUID, attachment tool and observed response time for up to 20 outputs per thread. Review and acceptance remain recorded in OrgX.
+
+`trail sync` includes those typed references in the outline. OrgX checks the authenticated owner and workspace before accepting them. `--dry-run` shows the references that would be sent; artifact bodies and titles stay local unless another selected upload mode includes them. Uploads are limited to 1,000 distinct output references per request.
+
+A failed OrgX context call appears as the named wall “OrgX context could not be loaded,” with guidance to state the missing context and avoid inventing team, budget or open work. Existing transcripts are reread when this version rebuilds its cache; stable thread aliases are preserved.
 
 ## How it works
 
@@ -176,7 +196,7 @@ Trail is built on other people's ideas. None of them endorse it; this is what we
 
 `trail privacy` shows what trail keeps, where, who can read it, and what each command sends, counted from the files.
 Secrets are removed before anything is stored or sent, using gitleaks' 221 provider rules (plus OrgX and OpenRouter keys);
-trail's folder is readable by you only. Uploads are explicit: `trail sync` sends counts and move strings
+trail's folder is readable by you only. Uploads are explicit: `trail sync` sends counts, move strings, PR numbers and observed OrgX artifact UUID references
 (`--with-titles` adds titles); `sync --receipts`, `watch --receipts`, and opt-in receipt hooks can send asks, summaries,
 and evidence excerpts. `trail deepen` sends analysis text after a quote you confirm. Review the command table before
 enabling these flows. For names, emails, phones and addresses too,
@@ -189,6 +209,44 @@ Claude Code deletes transcripts older than 30 days by default (`cleanupPeriodDay
 Everything lives in `~/.orgx/trail` (override with `TRAIL_HOME`). Delete that folder to forget it all.
 
 Built by [OrgX](https://useorgx.com).
+# Cloud agents
+
+Prepare receipt hooks before the cloud client starts, without a credential or
+existing transcript history:
+
+```sh
+trail receipt-hook prepare --client claude --consent content
+# For Codex, use --client codex. Native hook trust is still required.
+```
+
+`--consent content` explicitly authorizes runtime uploads of redacted prompts,
+summaries, commands, output excerpts and human corrections. Personal-data
+masking is a separate `trail privacy --pii on` setting. Ordinary installation
+does not enable this preparation mode. The command writes static configuration;
+it does not log in, upload, or start a capture worker. Runtime events start the
+existing incremental worker, which retries refused uploads using persisted
+checkpoints and destination-scoped acknowledgements.
+
+Supply `ORGX_API_KEY` through the host's runtime secret controls. For proxy
+delivery, set `ORGX_AUTH_MODE=proxy-placeholder` or `proxy-header`, and set
+`ORGX_AUTH_SCOPE` to `<workspace-id>:<actor-id>`. Header mode sends no local
+Authorization header; placeholder mode sends the placeholder unchanged. Both
+skip stored credentials. Preserve the platform proxy and CA trust. Proxy
+environment support requires Node 22.21+; a configured mode is not a verified
+connection.
+
+Use `trail receipt-hook status --client claude|codex` to inspect configuration,
+and `trail receipt-hook uninstall --client claude|codex` to remove that client's
+handlers. Uninstall preserves local checkpoints and other clients' hooks.
+The OrgX Wizard's `orgx cloud recipe` generates the complete pinned install,
+startup and secret configuration. See the
+[cloud agent guide](https://docs.useorgx.com/guides/cloud-agents).
+
+Automatic receipts need a supported native hook payload with `transcript_path`
+or `transcriptPath`. A missing transcript cannot produce receipts. Local HTTP
+responses, receipt persistence, and human acceptance remain separate evidence.
+Do not snapshot task history, credentials, worker locks or pending receipts
+into a shared image.
 
 ## About OrgX
 

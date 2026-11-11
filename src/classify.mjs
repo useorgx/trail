@@ -3,6 +3,7 @@
 import os from 'node:os';
 import { WALLS, signature } from './walls.mjs';
 import { isCorrection } from './precedent.mjs';
+import { observedThreadArtifacts } from './orgx-outputs.mjs';
 
 export const HARNESS = /^(Base directory for this skill|Approach this as|Skill \/|The previous response failed|<(command-|local-command|task-notification|system-reminder|environment_context|recommended_p|codex_internal|user_instructions|in-app-brows|permissions instructions)|Caveat:|\[Request interrupted|\[Usage limit reached|\[Earlier usage-limit notes|The app was quit while you were working|Another Claude session sent a message|<cross-session-message|Stop hook feedback:|A session-scoped Stop hook is now active|"Auto-fix pull requests" \(the desktop app\)|# AGENTS\.md)/;
 export const CONTINUE = /^\s*(continue|go on|keep going|go|proceed|yes|yep|ok(ay)?|do it|go ahead|try again|continue from where you left off\.?|resume)[.!]?\s*$/i;
@@ -139,6 +140,10 @@ export function threadify(s) {
   for (let i = 0; i < own.length; i++) { const t = own[i]; if (!t) continue; const sp = (t.spans ||= []); const last = sp[sp.length - 1]; if (last && last[1] === i - 1) last[1] = i; else sp.push([i, i]); }
   const threads = T.filter((t) => t.moves.length || t.origin === 'ask' || t.origin === 'schedule');
   const lastT = cur; threads.forEach((t, k) => finish(t, t === lastT, threads.length));
+  for (const thread of threads) {
+    const artifacts = observedThreadArtifacts(s.ev, thread.spans);
+    if (artifacts.length) thread.orgx_artifacts = artifacts;
+  }
   const errs = s.ev.filter((e) => e.err).length, denied = s.ev.filter((e) => e.denied).length;
   return { threads, walls: [...walls.values()], steers, tools, errs, denied, compactions: s.ev.filter((e) => e.k === 'compact').length };
 }

@@ -10,6 +10,7 @@ import { loadSessions, loadAdoptions, loadSignals, HOME, VERSION } from './store
 import { modelInfo } from './model.mjs';
 import { corpus } from './metrics.mjs';
 import { wallById } from './walls.mjs';
+import { orgxArtifactRefs } from './orgx-outputs.mjs';
 import { piiEnabled, maskPii } from './pii.mjs';
 import { receiptFingerprint, withIntegrity } from './integrity.mjs';
 import { redactDeep } from './redact.mjs';
@@ -24,16 +25,44 @@ const saveSyncState = (state) => {
 };
 const CHUNK = 200;
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+const ACK_FIELDS = ['sessions', 'receipts', 'receiptRevisions', 'signalsSent'];
+const object = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+function syncRoot(base) {
+  const url = new URL(baseUrl(base));
+  if (url.username || url.password || url.search || url.hash) throw new Error('OrgX base URL must not contain credentials, a query, or a fragment.');
+  return url.href.replace(/\/+$/, '');
+}
+function syncState(root, key) {
+  let stored;
+  try { stored = JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch {}
+  // Legacy acknowledgements have no destination/account evidence. Re-send them
+  // safely using the existing server idempotency keys instead of guessing.
+  const destinations = object(stored?.destinations);
+  const scope = key ? sha(JSON.stringify(['trail-sync/v2', root, key])) : null;
+  const previous = scope ? object(destinations[scope]) : {};
+  const state = Object.fromEntries(ACK_FIELDS.map((field) => [field, object(previous[field])]));
+  return { state, scopeKnown: scope !== null, save: () => {
+    destinations[scope] = state;
+    saveSyncState({ version: 2, destinations });
+  } };
+}
+// Previews never prompt the keychain or need a login. Without an explicit key,
+// show a conservative backlog rather than applying an unknown account's acks.
+const previewKey = () => process.env.ORGX_API_KEY?.trim() || null;
 import { CLIENTS } from './clients.mjs';
 const CLIENT = Object.fromEntries(Object.entries(CLIENTS).map(([k, v]) => [k, v.contract]));
 const ORIGIN = (t) => (t.origin === 'surprise' ? ({ wall: 'wall', recovery: 'recovery' }[t.kind] || 'found') : ({ ask: 'asked', plan: 'plan', schedule: 'scheduled', agent: 'plan' }[t.origin] || 'asked'));
 const STATUS = { outcome: 'done', abandoned: 'dropped', open: 'open', parked: 'parked', 'outcome?': 'unclear' };
 
 export { credential, baseUrl } from './credentials.mjs';
-import { credential, baseUrl } from './credentials.mjs';
+import { credential, baseUrl, authHeaders } from './credentials.mjs';
 
 const iso = (t, d) => { const x = Date.parse(t || d); return Number.isFinite(x) ? new Date(x).toISOString() : new Date(0).toISOString(); };
 const clampMoves = (m) => (m.length <= 400 ? m : m.slice(0, 200) + m.slice(-200));
+const outlineThreadId = (id) => {
+  if (typeof id !== 'string' || !/^T\d{1,16}$/.test(id) || !Number.isSafeInteger(Number(id.slice(1)))) throw new Error('Cannot sync an outline with an invalid stable thread identity.');
+  return id;
+};
 
 export function toSession(s, bounded) {
   return {
@@ -43,11 +72,13 @@ export function toSession(s, bounded) {
     started_at: iso(s.start), ended_at: iso(s.end, s.start),
     tool_calls: s.tools | 0, failed_calls: s.errs | 0, denied_calls: s.denied | 0,
     human_steers: s.steers?.human | 0, continues: s.steers?.cont | 0,
-    threads: s.threads.slice(0, 500).map((t, i) => ({
-      id: /^T\d{1,5}$/.test(t.id) ? t.id : `T${i + 1}`, origin: ORIGIN(t), status: STATUS[t.status] || 'unclear',
+    threads: s.threads.slice(0, 500).map((t) => ({
+      id: outlineThreadId(t.id), origin: ORIGIN(t), status: STATUS[t.status] || 'unclear',
       moves: clampMoves(t.moves.replace(/[^prchsdXD]/g, '')), backtracks: t.backs.length,
-      // Only references travel: PR numbers. Commit messages and free text stay on the machine.
+      // Only references travel: PR numbers and typed OrgX artifact observations.
+      // Commit messages and free text stay on the machine.
       claims: (t.claim || []).filter((c) => /^PR #\d{1,7}$/.test(c)).slice(0, 10),
+      ...(orgxArtifactRefs(t.orgx_artifacts).length ? { orgx_artifacts: orgxArtifactRefs(t.orgx_artifacts) } : {}),
       started_at: iso(t.t0, s.start), ended_at: iso(t.t1, s.end || s.start),
       p_dropped: t.p_abandon ?? null,
       ...(bounded && t.title ? { title: String(t.title).slice(0, 120) } : {}),
@@ -56,12 +87,20 @@ export function toSession(s, bounded) {
   };
 }
 
-const fingerprint = (s) => `${s.tools}:${s.threads.length}:${s.end}`;
+const fingerprint = (s) => {
+  const base = `${s.tools}:${s.threads.length}:${s.end}`;
+  const refs = s.threads.map((t) => orgxArtifactRefs(t.orgx_artifacts));
+  return refs.some((items) => items.length) ? `${base}:${sha(JSON.stringify(refs)).slice(0, 16)}` : base;
+};
 
-export function sync(options = {}) { return withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
-async function performOutlineSync({ dryRun = false, withTitles = false, base, limit } = {}) {
+export function sync(options = {}) { return options.dryRun ? performOutlineSync(options) : withProcessLock(SYNC_LOCK, () => performOutlineSync(options)); }
+async function performOutlineSync({ dryRun = false, withTitles = false, base, limit, fetchImpl = fetch } = {}) {
   const bounded = !!withTitles;
-  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })();
+  const root = syncRoot(base);
+  const cred = dryRun ? null : credential();
+  if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
+  if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.scope || cred.key);
   const sessions = loadSessions().filter((s) => s.threads.length && state.sessions[s.id] !== fingerprint(s));
   let todo = limit ? sessions.slice(-limit) : sessions;
   // Titles are the only text a bounded upload carries: with personal-data masking on, they go through
@@ -83,24 +122,28 @@ async function performOutlineSync({ dryRun = false, withTitles = false, base, li
   const envelope = (chunk, withAdoptions) => ({ schema_version: 'orgx-trail-threads/v1', privacy: bounded ? 'bounded' : 'metadata_only',
     source: { tool: '@useorgx/trail', version: VERSION, classifier: { sha: VERSION, model: mi?.name ?? null } },
     sessions: chunk.map((s) => toSession(s, bounded)), adoptions: withAdoptions ? adoptions : [] });
-  const chunks = []; for (let i = 0; i < todo.length; i += CHUNK) chunks.push(todo.slice(i, i + CHUNK));
+  const chunks = []; let chunk = [], artifactIds = new Set();
+  for (const session of todo) {
+    const ids = session.threads.flatMap((thread) => orgxArtifactRefs(thread.orgx_artifacts).map((ref) => ref.artifact_id));
+    if (new Set(ids).size > 1000) throw new Error('A session exceeds the 1,000 observed OrgX output references supported by one upload. Nothing was sent.');
+    if (chunk.length >= CHUNK || new Set([...artifactIds, ...ids]).size > 1000) { chunks.push(chunk); chunk = []; artifactIds = new Set(); }
+    chunk.push(session); for (const id of ids) artifactIds.add(id);
+  }
+  if (chunk.length) chunks.push(chunk);
   if (!chunks.length && adoptions.length) chunks.push([]);
-  const url = `${baseUrl(base)}/api/v1/trail/uploads`;
+  const url = `${root}/api/v1/trail/uploads`;
   if (dryRun) {
     const first = chunks[0] ? envelope(chunks[0].slice(0, 1), false) : null;
-    return { dryRun: true, url, privacy: bounded ? 'bounded' : 'metadata_only', sessions: todo.length, requests: chunks.length, threads: todo.reduce((a, s) => a + s.threads.length, 0), adoptions: adoptions.length, example: first?.sessions[0] ?? null };
+    return { dryRun: true, url, scopeKnown, privacy: bounded ? 'bounded' : 'metadata_only', sessions: todo.length, requests: chunks.length, threads: todo.reduce((a, s) => a + s.threads.length, 0), adoptions: adoptions.length, example: first?.sessions[0] ?? null };
   }
-  const cred = credential();
-  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow" when macOS asks, or set ORGX_API_KEY.');
-  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
   let sent = 0, threads = 0; let workspace = null;
   for (let i = 0; i < chunks.length; i++) {
-    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
+    const res = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: { 'content-type': 'application/json', ...authHeaders(cred) }, body: JSON.stringify(envelope(chunks[i], i === 0)) });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`OrgX refused the upload (${res.status}): ${body.error || 'unknown error'}${body.issues ? ' ' + JSON.stringify(body.issues.slice(0, 2)) : ''}`);
     sent += chunks[i].length; threads += body.data?.threads ?? 0; workspace = body.data?.workspaceId ?? workspace;
     for (const s of chunks[i]) state.sessions[s.id] = fingerprint(s);
-    saveSyncState(state);
+    save();
   }
   return { dryRun: false, url, credential: cred.from, sessions: sent, threads, workspace, privacy: bounded ? 'bounded' : 'metadata_only' };
 }
@@ -144,15 +187,19 @@ export function withLifecycle(receipt, status, reason = status === 'final' ? 'se
 
 let receiptSyncQueue = Promise.resolve();
 export function syncReceipts(options = {}) {
-  const result = receiptSyncQueue.then(() => withProcessLock(SYNC_LOCK, () => performReceiptSync(options)));
+  const result = receiptSyncQueue.then(() => options.dryRun ? performReceiptSync(options) : withProcessLock(SYNC_LOCK, () => performReceiptSync(options)));
   receiptSyncQueue = result.catch(() => {});
   return result;
 }
 async function performReceiptSync({ dryRun = false, base, limit = 50, since, receipts, lane = 'final', now = Date.now(), fetchImpl = fetch } = {}) {
   const { ledger, withGraph } = await import('./ledger.mjs');
-  const state = (() => { try { return JSON.parse(fs.readFileSync(SYNC_STATE, 'utf8')); } catch { return { sessions: {} }; } })(); state.receipts ||= {}; state.receiptRevisions ||= {};
   if (!['provisional', 'final'].includes(lane)) throw new Error('Receipt lane must be provisional or final.');
-  const L = receipts ? null : ledger({ persist: true });
+  const root = syncRoot(base);
+  const cred = dryRun ? null : credential();
+  if (!dryRun && cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
+  if (!dryRun && !cred?.key) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
+  const { state, save, scopeKnown } = syncState(root, dryRun ? previewKey() : cred.scope || cred.key);
+  const L = receipts ? null : ledger({ persist: !dryRun, fresh: dryRun });
   const source = receipts || L.receipts;
   const settled = now - SETTLE_MS;
   let todo = source.filter((r) => (!since || r.timestamps.started_at >= since) && (lane === 'provisional' || (!r.actions?.some((a) => a.status === 'running') && Date.parse(r.timestamps.completed_at) <= settled)))
@@ -170,25 +217,22 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   })
     .sort((a, b) => String(b.timestamps.started_at).localeCompare(String(a.timestamps.started_at)));
   const eligible = todo.length; todo = todo.slice(0, limit);
-  const root = baseUrl(base); const url = `${root}/api/v1/agent-work-receipts`;
+  const url = `${root}/api/v1/agent-work-receipts`;
   const privacy = piiEnabled() ? 'receipts (secrets redacted, personal data masked)' : 'receipts (secrets redacted; personal-data masking off — trail privacy --pii on)';
   state.signalsSent ||= {};
   const signals = lane === 'provisional' ? [] : unsentSignals(state);
-  if (dryRun) return { dryRun: true, url, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
-  const cred = credential();
-  if (cred?.blocked) throw new Error('Your OrgX key is in the keychain, but macOS needs your OK before trail can read it. Run this in your own terminal and choose "Always Allow", or set ORGX_API_KEY.');
-  if (!cred) throw new Error('No OrgX key found. Run `trail connect` to sign in, or set ORGX_API_KEY.');
-  const headers = { 'content-type': 'application/json', authorization: `Bearer ${cred.key}` };
-  const save = () => saveSyncState(state);
+  if (dryRun) return { dryRun: true, url, scopeKnown, privacy, lane, receipts: todo.length, pending: eligible, example: todo[0] ?? null, signals: { url: `${root}${SIGNALS_PATH}`, pending: signals.length, example: signals[0] ?? null } };
+  const headers = { 'content-type': 'application/json', ...authHeaders(cred) };
   let sent = 0, duplicate = 0; const refused = [];
   // Batches of 25 when the server has the batch route; one at a time otherwise. 429s wait as long as the server asks.
-  let batch = true;
+  let batch = true; let rateLimits = 0;
   for (let i = 0; i < todo.length;) {
     const chunk = batch ? todo.slice(i, i + 25) : [todo[i]];
     const body = batch ? { receipts: chunk.map((r) => ({ receipt: r, idempotency_key: idemKey(r.receipt_id, receiptFingerprint(r)) })) } : { receipt: chunk[0], idempotency_key: idemKey(chunk[0].receipt_id, receiptFingerprint(chunk[0])) };
-    const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify(body) });
     if (batch && (res.status === 404 || res.status === 405)) { batch = false; continue; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers.get('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { refused.push({ id: chunk[0].receipt_id, error: 'rate_limit_retry_exhausted' }); break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers.get('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     const out = await res.json().catch(() => ({}));
     if (res.status === 409 && out.error?.code === 'workspace_receipt_import_limit_reached') { refused.push({ id: chunk[0].receipt_id, error: out.error.message }); break; }
     const results = batch ? (out.results || []) : [{ ...out, ok: res.ok }];
@@ -217,12 +261,14 @@ function unsentSignals(state) {
 export async function sendSignals({ root, headers, state, save = () => {}, signals, fetchImpl = fetch }) {
   state.signalsSent ||= {};
   const out = { url: `${root}${SIGNALS_PATH}`, sent: 0, pending: signals.length, unsupported: false, error: null };
+  let rateLimits = 0;
   for (let i = 0; i < signals.length;) {
     const chunk = signals.slice(i, i + SIGNAL_BATCH);
     let res;
-    try { res = await fetchImpl(out.url, { method: 'POST', headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
+    try { res = await fetchImpl(out.url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify({ signals: chunk }) }); } catch (e) { out.error = String(e?.message || e).slice(0, 200); break; }
     if (res.status === 404) { out.unsupported = true; break; }
-    if (res.status === 429) { const wait = Math.min(65, +(res.headers?.get?.('retry-after') || 30)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+    if (res.status === 429 && ++rateLimits > 2) { out.error = 'rate_limit_retry_exhausted'; break; }
+    if (res.status === 429) { const wait = Math.min(15, Math.max(0, +(res.headers?.get?.('retry-after') || 15) || 0)); await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
     if (!res.ok) { const b = await res.json().catch(() => ({})); out.error = `${res.status} ${b.error?.code || b.error || 'refused'}`.slice(0, 200); break; }
     const at = new Date().toISOString(); for (const x of chunk) state.signalsSent[x.signalId] = at;
     out.sent += chunk.length; save(); i += chunk.length;

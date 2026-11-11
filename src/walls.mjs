@@ -1,9 +1,12 @@
 // Walls: failures agents keep rediscovering. Named walls carry a fix you can adopt;
 // everything else is grouped by a normalized error signature so new walls surface on their own.
+import { isOrgxContextCall } from './orgx-outputs.mjs';
 
 /** @typedef {{id:string,name:string,detect:(e:any)=>boolean,rule:string,kind:'agents'|'permissions'|'environment'}} Wall */
 /** @type {Wall[]} */
 export const WALLS = [
+  { id: 'orgx-context-unavailable', kind: 'environment', name: 'OrgX context could not be loaded', detect: (e) => e.err && !e.pending && isOrgxContextCall(e),
+    rule: 'State that OrgX context was unavailable before making business recommendations. Distinguish setup or authentication errors from service failures. Use admitted local evidence, and do not invent the team, budget, or open work.' },
   { id: 'codex-sandbox', kind: 'agents', name: 'Codex’s sandbox refuses writes outside the workspace', detect: (e) => e.denied && e.client === 'codex',
     rule: 'Codex runs in a sandbox that refuses writes outside the workspace root (other worktrees’ .git refs, ~/.codex, /tmp paths it did not create). Work inside the workspace, or ask the person to add the path to writable roots, instead of retrying variants.' },
   { id: 'denied-home', kind: 'agents', name: 'Don’t-ask runs can’t read or write ~/.claude', detect: (e) => e.denied && /\.claude\//.test(e.target),
