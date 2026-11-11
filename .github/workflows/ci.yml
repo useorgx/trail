@@ -4,7 +4,7 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'ubuntu-') && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ORGX_CI_RUNNER || matrix.os }}
     strategy:
       matrix: { os: [ubuntu-latest, macos-latest], node: [20, 22] }
     steps:
