@@ -12,7 +12,7 @@ Captured from the current browser ledger with the shipped demo's 48 made-up sess
 
 ## Quickstart
 
-Requires **Node.js 20+**. Try it without an account, API key, or existing session history:
+Requires **Node.js 22+**. Try it without an account, API key, or existing session history:
 
 ```bash
 npx -y @useorgx/trail --demo
