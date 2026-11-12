@@ -11,7 +11,7 @@ process.env.TRAIL_NO_KEYCHAIN = '1';
 process.env.TRAIL_CLAUDE_SETTINGS = path.join(home, '.claude', 'settings.json');
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => { throw new Error('Uninjected network request'); };
-const { syncReceipts } = await import('../src/sync.mjs');
+const { syncReceipts, reconcileCloudReceipts } = await import('../src/sync.mjs');
 const { receiptBoundary } = await import('../src/receipt-boundary.mjs');
 const { ensure, appendSignals } = await import('../src/store.mjs');
 const { readClaude } = await import('../src/adapters.mjs');
@@ -272,4 +272,90 @@ test('documented mixed batch HTTP 200 records valid successes but retains item-5
   assert.equal(result.receipts, 1); assert.equal(result.refused.length, 1);
   await assert.rejects(syncReceipts({ ...opts, receipts: [receipt, other], fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
   assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+async function uncertainHookAttempt() {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  installReceiptHooks(bin, { prepare: true, consent: 'content', base, workspace: A });
+  let document;
+  const tx = transport({ post: (_n, call) => { document = call.body.receipts[0].receipt; throw new Error('unknown outcome'); } });
+  await assert.rejects(syncReceipts({ ...opts, cloudRequired: true, fetchImpl: tx.fetchImpl }), /unknown outcome/);
+  return { document, tx };
+}
+test('exact full-document readback confirms delivery without replaying the POST', async () => {
+  const { document, tx } = await uncertainHookAttempt(); const gets = [];
+  const result = await reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url, init) => {
+    assert.equal(init.method, 'GET'); assert.equal(init.body, undefined); assert.equal(init.redirect, 'error'); gets.push(url);
+    if (url.endsWith('/api/v1/me')) return identity();
+    assert.ok(url.includes(encodeURIComponent(document.receipt_id))); assert.ok(url.endsWith(`workspace_id=${A}`));
+    return new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: document } }));
+  } });
+  assert.equal(result.confirmed.length, 1); assert.equal(result.confirmed[0].evidence, 'exact-document-readback'); assert.equal(result.remaining, 0);
+  assert.equal(gets.length, 4);
+  assert.equal((await syncReceipts({ ...opts, cloudRequired: true, fetchImpl: tx.fetchImpl })).receipts, 0);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('absent, newer, malformed or integrity-altered readback never authorizes replay', async () => {
+  const { document, tx } = await uncertainHookAttempt();
+  const responses = [() => new Response('{}', { status: 404 }),
+    () => new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: { ...document, outcome: { ...document.outcome, summary: 'Newer revision' } } } })),
+    () => new Response(JSON.stringify({ ok: true, data: { receipt_id: 'bad', receipt: document } })),
+    () => new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: { ...document, integrity: { different: true } } } })),
+    () => new Response('{')];
+  for (const response of responses) {
+    const result = await reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url, init) => {
+      assert.equal(init.method, 'GET'); return url.endsWith('/api/v1/me') ? identity() : response();
+    } });
+    assert.equal(result.confirmed.length, 0); assert.equal(result.remaining, 1);
+  }
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('readback actor drift leaves the attempted document pending', async () => {
+  const { document, tx } = await uncertainHookAttempt(); let identityReads = 0;
+  await assert.rejects(reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url) => {
+    if (url.endsWith('/api/v1/me')) return identity(A, ++identityReads > 2 ? B : actor);
+    return new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: document } }));
+  } }), /actor changed/);
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+});
+test('legacy pending records without an exact wire hash are retained for manual review', async () => {
+  await uncertainHookAttempt();
+  const file = path.join(process.env.TRAIL_HOME, 'sync.json'); const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete Object.values(state.destinations)[0].pendingReceipts[receipt.receipt_id].wireHash; fs.writeFileSync(file, JSON.stringify(state));
+  const result = await reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url) => { assert.ok(url.endsWith('/api/v1/me')); return identity(); } });
+  assert.equal(result.confirmed.length, 0); assert.equal(result.unresolved[0].reason, 'pending_evidence_incomplete'); assert.equal(result.remaining, 1);
+});
+test('same-binding native capture resumes existing task history without re-preparing the image', async () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  const options = { prepare: true, consent: 'content', base, workspace: A };
+  installReceiptHooks(bin, options);
+  const hook = JSON.parse(fs.readFileSync(path.join(process.env.TRAIL_HOME, 'receipt-hooks.json'), 'utf8'));
+  const file = path.join(home, 'resume-current.jsonl');
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), cwd: '/fixture', message: { role: 'user', content: 'Complete this fresh resumable task.' } }) + '\n');
+  const tx = transport(); const errors = [];
+  const captureOptions = { receipts: true, base, workspace: A, cloudRequired: true, captureAfter: hook.preparedAt,
+    syncImpl: (value) => syncReceipts({ ...value, fetchImpl: tx.fetchImpl }), onError: (error) => errors.push(error.message) };
+  const first = await startLiveCapture(file, 'claude', captureOptions); await first.flushed(); first.close();
+  assert.equal(errors.length, 0); assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+  // Preparation is an image-stage operation, not the task startup/resume path.
+  assert.throws(() => installReceiptHooks(bin, options), /fresh image/);
+  assert.equal((await runReceiptHook('{}', { client: 'claude', cloudRequired: true })).reason, 'transcript_path missing');
+  const resumed = await startLiveCapture(file, 'claude', captureOptions);
+  try { await resumed.flushed(); assert.equal(errors.length, 0); assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1); } finally { resumed.close(); }
+});
+test('recovery pagination reaches an exact match after 50 unresolved older entries', async () => {
+  const { document } = await uncertainHookAttempt();
+  const file = path.join(process.env.TRAIL_HOME, 'sync.json'); const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const pending = Object.values(state.destinations)[0].pendingReceipts;
+  for (let i = 0; i < 50; i++) pending[`000-unresolved-${String(i).padStart(2, '0')}`] = null;
+  fs.writeFileSync(file, JSON.stringify(state)); let documentReads = 0;
+  const fetchImpl = async (url, init) => {
+    assert.equal(init.method, 'GET');
+    if (url.endsWith('/api/v1/me')) return identity();
+    documentReads++; return new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: document } }));
+  };
+  const first = await reconcileCloudReceipts({ base, workspace: A, fetchImpl });
+  assert.equal(first.unresolved.length, 50); assert.ok(first.nextCursor); assert.equal(documentReads, 0);
+  const second = await reconcileCloudReceipts({ base, workspace: A, cursor: first.nextCursor, fetchImpl });
+  assert.equal(second.confirmed.length, 1); assert.equal(second.nextCursor, null); assert.equal(second.remaining, 50); assert.equal(documentReads, 1);
 });

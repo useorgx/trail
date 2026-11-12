@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { canonicalizeAgentWorkJson } from '@useorgx/agent-work-receipt';
 import { execFileSync, spawn } from 'node:child_process';
 import { loadSessions, loadAdoptions, loadSignals, HOME, VERSION } from './store.mjs';
 import { modelInfo } from './model.mjs';
@@ -245,7 +246,7 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
       delivery = await verifyReceiptBoundary(boundary, cred, fetchImpl, delivery?.actorId);
       body.workspace_id = boundary.workspaceId;
       // Persist exact attempted material before transport. A crash/timeout cannot become an implicit replay.
-      for (const r of chunk) state.pendingReceipts[r.receipt_id] = { fingerprint: receiptFingerprint(r), idempotencyKey: idemKey(r.receipt_id, receiptFingerprint(r)), workspaceId: boundary.workspaceId, actorId: delivery.actorId };
+      for (const r of chunk) state.pendingReceipts[r.receipt_id] = { fingerprint: receiptFingerprint(r), wireHash: sha(canonicalizeAgentWorkJson(r)), sourceTime: sourceTime(r), lane, idempotencyKey: idemKey(r.receipt_id, receiptFingerprint(r)), workspaceId: boundary.workspaceId, actorId: delivery.actorId };
       save();
     }
     const res = await fetchImpl(batch ? `${url}/batch` : url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000), headers, body: JSON.stringify(body) });
@@ -279,6 +280,57 @@ async function performReceiptSync({ dryRun = false, base, limit = 50, since, rec
   }
   const sig = await sendSignals({ root, headers, state, save, signals, fetchImpl });
   return { dryRun: false, url, credential: cred.from, lane, receipts: sent, duplicate, refused, privacy, remaining: eligible - sent, signals: sig, ...(delivery ? { delivery } : {}) };
+}
+
+// Read-only remote reconciliation: only exact positive document evidence settles a local pending upload.
+// A missing/latest-different receipt cannot prove that the attempted revision never committed.
+export async function reconcileCloudReceipts({ base, workspace, limit = 50, cursor, fetchImpl = fetch } = {}) {
+  if (!workspace) throw new Error('Cloud receipt reconciliation requires the intended --workspace UUID.');
+  if (cursor !== undefined && typeof cursor !== 'string') throw new Error('Receipt reconciliation cursor must be an opaque receipt ID.');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('Reconcile between 1 and 50 pending receipts at a time.');
+  return withProcessLock(SYNC_LOCK, async () => {
+    const root = syncRoot(base);
+    const boundary = receiptBoundary({ root, workspace, cloudRequired: true });
+    const cred = credential();
+    if (!cred?.key || cred.blocked) throw new Error('A runtime credential is required for receipt reconciliation.');
+    const identity = await verifyReceiptBoundary(boundary, cred, fetchImpl);
+    const accountScope = JSON.stringify(['cloud-receipts/v1', boundary.workspaceId, identity.actorId]);
+    const { state, save } = syncState(root, accountScope, { strict: true });
+    const confirmed = []; const unresolved = [];
+    const entries = Object.entries(state.pendingReceipts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).filter(([id]) => cursor === undefined || id > cursor);
+    const page = entries.slice(0, limit);
+    const nextCursor = entries.length > page.length ? page.at(-1)[0] : null;
+    for (const [id, pending] of page) {
+      if (!pending || pending.workspaceId !== boundary.workspaceId || pending.actorId !== identity.actorId ||
+        !/^[a-f0-9]{64}$/.test(pending.wireHash || '') || !/^[a-f0-9]{64}$/.test(pending.fingerprint || '') ||
+        !['provisional', 'final'].includes(pending.lane) || !Number.isFinite(pending.sourceTime)) {
+        unresolved.push({ id, reason: 'pending_evidence_incomplete' }); continue;
+      }
+      await verifyReceiptBoundary(boundary, cred, fetchImpl, identity.actorId);
+      let response; let output;
+      try {
+        response = await fetchImpl(`${root}/api/v1/work-ledger/receipts/${encodeURIComponent(id)}?workspace_id=${encodeURIComponent(boundary.workspaceId)}`, {
+          method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15_000), headers: authHeaders(cred),
+        });
+        output = await response.json();
+      } catch { unresolved.push({ id, reason: 'readback_unavailable' }); continue; }
+      const document = output?.data?.receipt; const hosted = output?.data?.receipt_id;
+      let matches = false;
+      try { matches = response.ok && output?.ok === true && document?.receipt_id === id &&
+        typeof hosted === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(hosted) &&
+        sha(canonicalizeAgentWorkJson(document)) === pending.wireHash && receiptFingerprint(document) === pending.fingerprint; } catch {}
+      if (!matches) { unresolved.push({ id, reason: 'exact_document_not_observed' }); continue; }
+      // Recheck the activation and actor after asynchronous readback before acknowledging locally.
+      await verifyReceiptBoundary(boundary, cred, fetchImpl, identity.actorId);
+      state.receipts[id] = pending.fingerprint;
+      state.receiptRevisions[id] = { sourceTime: pending.sourceTime, lane: pending.lane };
+      delete state.pendingReceipts[id]; save();
+      confirmed.push({ id, ledgerReceiptId: hosted, evidence: 'exact-document-readback' });
+    }
+    return { schemaVersion: 'orgx-cloud-receipt-reconciliation/v1', workspaceId: boundary.workspaceId, actorId: identity.actorId,
+      confirmed, unresolved, nextCursor, remaining: Object.keys(state.pendingReceipts).length,
+      limitation: 'Exact document presence only; this does not establish idempotency-attempt ownership, downstream side effects or human acceptance.' };
+  });
 }
 
 // ---- precedent signals: the judgments a person made (corrections, rejections, denials, stated rules) --------------
