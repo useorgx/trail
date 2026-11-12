@@ -39,7 +39,7 @@ test('unattended preparation requires content consent, no credential, and preser
   const claude = process.env.TRAIL_CLAUDE_SETTINGS;
   fs.mkdirSync(path.dirname(claude), { recursive: true });
   fs.writeFileSync(claude, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'foreign-hook' }] }] } }));
-  const options = { prepare: true, consent: 'content', base: 'https://useorgx.com' };
+  const options = { prepare: true, consent: 'content', base: 'https://useorgx.com', workspace: '11111111-1111-4111-8111-111111111111' };
   assert.equal(installReceiptHooks(bin, options).installed, true);
   const before = fs.readFileSync(claude, 'utf8');
   const backups = fs.readdirSync(path.join(process.env.TRAIL_HOME, 'backup'));
@@ -48,7 +48,7 @@ test('unattended preparation requires content consent, no credential, and preser
   assert.deepEqual(fs.readdirSync(path.join(process.env.TRAIL_HOME, 'backup')), backups);
   assert.equal(installReceiptHooks(bin, { ...options, client: 'codex' }).installed, true);
   assert.match(fs.readFileSync(path.join(home, '.codex', 'hooks.json'), 'utf8'), /run --client codex/);
-  assert.equal((await runReceiptHook('{}', { client: 'codex' })).reason, 'transcript_path missing');
+  await assert.rejects(runReceiptHook('{}', { client: 'codex' }), /binding is missing/);
   await uninstallReceiptHooks({ client: 'codex' });
   assert.equal(receiptHookStatus().installed, true);
   await uninstallReceiptHooks();
@@ -77,6 +77,7 @@ test('runtime proxy transports skip stored credentials and scope receipt acknowl
   assert.equal(baseUrl(), 'https://api.example');
   recordReceiptDelivery({ client: 'codex', session_id: 'native-session', cwd: '/repo' }, {
     receipts: 1, url: 'https://api.example/api/v1/agent-work-receipts', refused: [],
+    delivery: { destination: 'https://api.example', scopeHash: 'a'.repeat(64), workspaceId: '11111111-1111-4111-8111-111111111111', actorId: '22222222-2222-4222-8222-222222222222' },
   });
   const records = fs.readdirSync(path.join(home, '.orgx', 'cloud-receipts'));
   assert.equal(records.length, 1);
@@ -86,3 +87,4 @@ test('runtime proxy transports skip stored credentials and scope receipt acknowl
   recordReceiptDelivery({ session_id: 'failed' }, { receipts: 0, refused: [{ id: 'failed' }] });
   assert.equal(fs.readdirSync(path.join(home, '.orgx', 'cloud-receipts')).length, 1);
 });
+

@@ -11,6 +11,7 @@ import { HOME } from './store.mjs';
 import { settingsPath } from './guard.mjs';
 import { startLiveCapture } from './live.mjs';
 import { credential } from './sync.mjs';
+import { receiptBoundary, receiptDestination } from './receipt-boundary.mjs';
 
 const MARK = 'orgx trail receipts';
 const EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop'];
@@ -36,18 +37,25 @@ export function receiptHookStatus({ client = 'claude' } = {}) {
   const settings = read(file, {}); const config = read(CONFIG, {});
   return { installed: config.enabled === true && EVENTS.every((event) => settings.hooks?.[event]?.some((entry) => entry.hooks?.some(ours))), settings: file, client, consent: config.consent || 'content', events: EVENTS };
 }
-export function installReceiptHooks(binPath, { base, client = 'claude', prepare = false, consent } = {}) {
+export function installReceiptHooks(binPath, { base, client = 'claude', prepare = false, consent, workspace } = {}) {
   if (prepare && consent !== 'content') throw new Error('Cloud receipt preparation requires --consent content: prompts, summaries, commands and output excerpts can be uploaded at runtime.');
+  if (prepare && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workspace || '')) throw new Error('Cloud receipt preparation requires --workspace UUID.');
+  if (prepare) base = receiptDestination(base || 'https://useorgx.com');
   if (!prepare && !credential()?.key) throw new Error('Run `trail connect` or set ORGX_API_KEY before enabling receipt uploads.');
   const file = receiptSettingsPath(client); const settings = read(file, {});
   const previous = JSON.stringify(settings);
   const previousConfig = read(CONFIG, {});
+  if (prepare) {
+    const hasData = ['receipt-checkpoints', 'receipts', 'sessions', 'language'].some((name) => { try { return fs.readdirSync(path.join(HOME, name)).length > 0; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } });
+    const hasSignals = (() => { try { return fs.statSync(path.join(HOME, 'precedent-candidates.jsonl')).size > 0; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } })();
+    if (hasData || hasSignals) throw new Error('Cloud receipt preparation requires a fresh image without task history. Existing checkpoints and signals were preserved.');
+  }
   fs.mkdirSync(path.join(HOME, 'backup'), { recursive: true, mode: 0o700 });
   remove(settings); settings.hooks ||= {};
   // Single-quote shell escaping protects executable paths, including spaces and command-substitution characters.
   const quote = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
-  for (const event of EVENTS) (settings.hooks[event] ||= []).push({ hooks: [{ type: 'command', command: `${process.platform === 'win32' ? '' : 'env NODE_USE_ENV_PROXY=1 '}${quote(process.execPath)} ${quote(binPath)} receipt-hook run --client ${client}`, timeout: 5, statusMessage: MARK }] });
-  const config = { ...previousConfig, enabled: true, consent: 'content', clients: [...new Set([...(previousConfig.clients || (previousConfig.enabled ? ['claude'] : [])), client])].sort(), ...(base ? { base } : {}) };
+  for (const event of EVENTS) (settings.hooks[event] ||= []).push({ hooks: [{ type: 'command', command: `${process.platform === 'win32' ? '' : 'env NODE_USE_ENV_PROXY=1 '}${quote(process.execPath)} ${quote(binPath)} receipt-hook run --client ${client}${prepare ? ' --cloud-required' : ''}`, timeout: 5, statusMessage: MARK }] });
+  const config = { ...previousConfig, enabled: true, consent: 'content', clients: [...new Set([...(previousConfig.clients || (previousConfig.enabled ? ['claude'] : [])), client])].sort(), ...(base ? { base } : {}), ...(prepare ? { workspace, cloudRequired: true, preparedAt: previousConfig.enabled === true && previousConfig.clients?.includes(client) && previousConfig.cloudRequired && previousConfig.workspace === workspace && previousConfig.base === base && previousConfig.preparedAt ? previousConfig.preparedAt : new Date().toISOString() } : {}) };
   if (previous === JSON.stringify(settings) && JSON.stringify(config) === JSON.stringify(previousConfig)) return receiptHookStatus({ client });
   if (fs.existsSync(file)) fs.copyFileSync(file, path.join(HOME, 'backup', `${client}-settings.receipts.${Date.now()}.json`));
   fs.writeFileSync(CONFIG, JSON.stringify(config), { mode: 0o600 });
@@ -71,9 +79,12 @@ function dispatch(payload) {
     socket.on('data', (chunk) => { response += chunk; if (response.includes('\n')) { socket.end(); try { const result = JSON.parse(response.trim()); result.error ? reject(new Error(result.error)) : resolve(result); } catch (error) { reject(error); } } });
   });
 }
-export async function runReceiptHook(input, { client } = {}) {
-  const config = read(CONFIG, {}); if (!config.enabled) return { skipped: true };
+export async function runReceiptHook(input, { client, cloudRequired = false } = {}) {
+  const config = read(CONFIG, {});
+  if (cloudRequired || config.cloudRequired) receiptBoundary({ root: config.base, workspace: config.workspace, cloudRequired: true, client });
+  if (!config.enabled) return { skipped: true };
   const payload = JSON.parse(input || '{}'); if (client) payload.client = client;
+  if (cloudRequired || config.cloudRequired) payload.cloudRequired = true;
   payload.transcript_path ||= payload.transcriptPath;
   if (!payload.transcript_path) return { skipped: true, reason: 'transcript_path missing' };
   if (config.clients && !config.clients.includes(payload.client || 'claude')) return { skipped: true, reason: 'client disabled' };
@@ -120,12 +131,17 @@ export async function receiptHookWorker({ captureImpl = startLiveCapture } = {})
         try {
           const payload = JSON.parse(line);
           if (payload.shutdown) { socket.end('{"ok":true}\n'); void close(); return; }
-          if (!payload.ping && read(CONFIG, {}).enabled) {
+          const current = read(CONFIG, {});
+          if (!payload.ping && (payload.cloudRequired || config.cloudRequired || current.cloudRequired)) {
+            if (!current.enabled || current.workspace !== config.workspace || current.base !== config.base) throw new Error('Cloud receipt hook configuration changed; restart its worker.');
+            receiptBoundary({ root: config.base, workspace: config.workspace, cloudRequired: true, client: payload.client });
+          }
+          if (!payload.ping && current.enabled) {
             const file = payload.transcript_path;
             if (typeof file !== 'string') throw new Error('Receipt hook requires transcript_path.');
             let capture = captures.get(file);
             if (!capture) {
-              capture = await captureImpl(file, payload.client || 'claude', { receipts: true, base: config.base, onDelivery: (result) => recordReceiptDelivery(payload, result), onError: (error) => process.stderr.write(`trail receipts: ${error.message}\n`) });
+              capture = await captureImpl(file, payload.client || 'claude', { receipts: true, base: config.base, workspace: config.workspace, cloudRequired: !!config.cloudRequired || !!payload.cloudRequired, captureAfter: config.preparedAt, onDelivery: (result) => recordReceiptDelivery(payload, result), onError: (error) => process.stderr.write(`trail receipts: ${error.message}\n`) });
               captures.set(file, capture);
             } else await capture.update();
           }
@@ -149,11 +165,12 @@ export function recordReceiptDelivery(payload, result) {
   const dir = path.join(os.homedir(), '.orgx', 'cloud-receipts');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const sessionHash = hash(`${client}:${session}`);
-  const cred = credential();
+  const delivery = result.delivery;
+  if (!delivery || delivery.destination !== new URL(result.url).origin || !/^[a-f0-9]{64}$/.test(delivery.scopeHash || '')) return;
   const file = path.join(dir, `${sessionHash}.json`);
   const temp = `${file}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(temp, JSON.stringify({ schemaVersion: 'orgx-receipt-delivery/v1', sessionHash,
-    destination: new URL(result.url).origin, scopeHash: hash(cred.scope || cred.key), cwdHash: hash(payload.cwd || process.cwd()), acknowledgedAt: new Date().toISOString(),
+    destination: delivery.destination, scopeHash: delivery.scopeHash, workspaceId: delivery.workspaceId, actorId: delivery.actorId, cwdHash: hash(payload.cwd || process.cwd()), acknowledgedAt: new Date().toISOString(),
     receipts: result.receipts, evidence: 'receipt-api-acknowledgement' }) + '\n', { mode: 0o600 });
   fs.renameSync(temp, file);
 }

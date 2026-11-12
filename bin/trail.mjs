@@ -14,8 +14,8 @@ if (process.argv[2] === 'receipt-hook') {
   const client = value('client') || 'claude';
   try {
     if (process.argv[3] === 'worker') { const worker = await receiptHookWorker(); if (worker) await new Promise((resolve) => worker.server.once('close', resolve)); }
-    else if (process.argv[3] === 'run') { let input = ''; for await (const chunk of process.stdin) input += chunk; await runReceiptHook(input, { client }); }
-    else if (['install', 'prepare'].includes(process.argv[3])) console.log(JSON.stringify(installReceiptHooks(fileURLToPath(import.meta.url), { base: value('base'), client, prepare: process.argv[3] === 'prepare', consent: value('consent') })));
+    else if (process.argv[3] === 'run') { let input = ''; for await (const chunk of process.stdin) input += chunk; await runReceiptHook(input, { client, cloudRequired: process.argv.includes('--cloud-required') }); }
+    else if (['install', 'prepare'].includes(process.argv[3])) console.log(JSON.stringify(installReceiptHooks(fileURLToPath(import.meta.url), { base: value('base'), client, prepare: process.argv[3] === 'prepare', consent: value('consent'), workspace: value('workspace') })));
     else if (process.argv[3] === 'uninstall') console.log(JSON.stringify(await uninstallReceiptHooks({ client })));
     else console.log(JSON.stringify(receiptHookStatus({ client })));
   } catch (error) { process.stderr.write(`trail receipt-hook: ${error.message}\n`); process.exitCode = 1; }

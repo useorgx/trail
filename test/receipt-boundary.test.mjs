@@ -1,0 +1,275 @@
+import { test, beforeEach, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'trail-boundary-'));
+process.env.HOME = home;
+process.env.TRAIL_HOME = path.join(home, '.orgx', 'trail');
+process.env.TRAIL_NO_KEYCHAIN = '1';
+process.env.TRAIL_CLAUDE_SETTINGS = path.join(home, '.claude', 'settings.json');
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => { throw new Error('Uninjected network request'); };
+const { syncReceipts } = await import('../src/sync.mjs');
+const { receiptBoundary } = await import('../src/receipt-boundary.mjs');
+const { ensure, appendSignals } = await import('../src/store.mjs');
+const { readClaude } = await import('../src/adapters.mjs');
+const { threadify } = await import('../src/classify.mjs');
+const { steps } = await import('../src/steps.mjs');
+const { buildGoals } = await import('../src/goals.mjs');
+const { buildReceipt } = await import('../src/receipt.mjs');
+const { installReceiptHooks, uninstallReceiptHooks, runReceiptHook, recordReceiptDelivery } = await import('../src/receipt-hooks.mjs');
+const { startLiveCapture } = await import('../src/live.mjs');
+const source = await readClaude(new URL('./fixtures/claude.jsonl', import.meta.url).pathname);
+const threads = threadify(source); const st = steps(source); const goal = buildGoals(source, threads, st)[0];
+const receipt = buildReceipt({ ...source, client: 'claude', id: 'boundary-fixture' }, goal, st, threads.threads.find((t) => t.id === goal.root));
+const A = '11111111-1111-4111-8111-111111111111';
+const B = '22222222-2222-4222-8222-222222222222';
+const actor = '33333333-3333-4333-8333-333333333333';
+const base = 'https://example.test';
+const configFile = path.join(home, '.orgx', 'cloud.json');
+const config = (changes = {}) => fs.writeFileSync(configFile, JSON.stringify({ schemaVersion: 'orgx-cloud-config/v1', workspaceId: A, baseUrl: base, authMode: 'direct', nativePayloads: true, receipts: 'content', client: 'claude-code', ...changes }));
+const opts = { base, receipts: [receipt], lane: 'provisional' };
+const identity = (workspace = A, user = actor) => new Response(JSON.stringify({ data: { principal: { user_id: user }, default_workspace_id: workspace, workspaces: [{ id: workspace }] } }));
+function transport({ me = () => identity(), post } = {}) {
+  const calls = []; let gets = 0; let posts = 0;
+  const fetchImpl = async (url, init) => {
+    assert.equal(init.redirect, 'error'); assert.ok(init.signal);
+    calls.push({ url, method: init.method, body: init.body && JSON.parse(init.body), headers: init.headers });
+    if (init.method === 'GET') return me(++gets);
+    posts++;
+    if (post) return post(posts, calls.at(-1));
+    const body = JSON.parse(init.body);
+    return new Response(JSON.stringify({ results: body.receipts.map(({ receipt: r }) => ({ ok: true, receipt_id: B, external_receipt_id: r.receipt_id, schema_version: r.schema_version })) }));
+  };
+  return { calls, fetchImpl };
+}
+beforeEach(() => {
+  fs.rmSync(home, { recursive: true, force: true }); ensure(); config();
+  process.env.ORGX_API_KEY = 'synthetic-runtime-key';
+  delete process.env.ORGX_AUTH_MODE; delete process.env.ORGX_AUTH_SCOPE; delete process.env.ORGX_BASE_URL;
+});
+after(() => { globalThis.fetch = originalFetch; fs.rmSync(home, { recursive: true, force: true }); });
+
+test('wrong authenticated workspace refuses before any content POST', async () => {
+  const tx = transport({ me: () => identity(B) });
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /intended workspace/);
+  assert.deepEqual(tx.calls.map((c) => c.method), ['GET']);
+  assert.equal(fs.existsSync(path.join(process.env.TRAIL_HOME, 'sync.json')), false);
+});
+test('every batch POST is explicitly workspace-bound and freshly identity checked', async () => {
+  const tx = transport(); const receipts = Array.from({ length: 26 }, (_, i) => ({ ...receipt, receipt_id: `test:${i}` }));
+  const result = await syncReceipts({ ...opts, receipts, fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 26); assert.equal(result.delivery.workspaceId, A);
+  assert.deepEqual(tx.calls.map((c) => c.method), ['GET', 'GET', 'POST', 'GET', 'POST']);
+  assert.ok(tx.calls.filter((c) => c.method === 'POST').every((c) => c.body.workspace_id === A));
+});
+test('identity drift between batches stops remaining content', async () => {
+  const tx = transport({ me: (n) => identity(n >= 3 ? B : A) });
+  await assert.rejects(syncReceipts({ ...opts, receipts: Array.from({ length: 26 }, (_, i) => ({ ...receipt, receipt_id: `drift:${i}` })), fetchImpl: tx.fetchImpl }), /intended workspace/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('single-route fallback and rate-limit retries retain binding and idempotency identity', async () => {
+  const tx = transport({ post: (n, call) => n === 1 ? new Response('{}', { status: 404 }) : n === 2 ? new Response('{}', { status: 429, headers: { 'retry-after': '0' } }) : new Response(JSON.stringify({ ok: true, receipt_id: B, external_receipt_id: call.body.receipt.receipt_id, schema_version: call.body.receipt.schema_version })) });
+  assert.equal((await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl })).receipts, 1);
+  const posts = tx.calls.filter((c) => c.method === 'POST');
+  assert.ok(posts.every((c) => c.body.workspace_id === A));
+  assert.equal(posts[0].body.receipts[0].idempotency_key, posts[1].body.idempotency_key);
+  assert.equal(posts[1].body.idempotency_key, posts[2].body.idempotency_key);
+  for (let i = 0; i < tx.calls.length; i++) if (tx.calls[i].method === 'POST') assert.equal(tx.calls[i - 1].method, 'GET');
+});
+test('proxy-header scope is checked against authenticated identity, not trusted as proof', async () => {
+  config({ authMode: 'proxy-header' }); process.env.ORGX_AUTH_MODE = 'proxy-header'; process.env.ORGX_AUTH_SCOPE = `${A}:${B}`;
+  const tx = transport(); await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /ORGX_AUTH_SCOPE/);
+  assert.equal(tx.calls.length, 1); assert.equal(tx.calls[0].headers.authorization, undefined);
+  process.env.ORGX_AUTH_SCOPE = `${A}:${actor}`;
+  assert.equal((await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl })).receipts, 1);
+  assert.ok(tx.calls.every((c) => c.headers.authorization === undefined));
+});
+test('proxy-placeholder uses the same verified transport for identity and content', async () => {
+  config({ authMode: 'proxy-placeholder' }); process.env.ORGX_AUTH_MODE = 'proxy-placeholder'; process.env.ORGX_AUTH_SCOPE = `${A}:${actor}`;
+  const tx = transport(); assert.equal((await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl })).receipts, 1);
+  assert.ok(tx.calls.every((c) => c.headers.authorization === 'Bearer synthetic-runtime-key'));
+});
+test('config removal or disablement during verification sends no content', async () => {
+  for (const mutate of [() => fs.unlinkSync(configFile), () => config({ receipts: 'off' }), () => config({ workspaceId: B })]) {
+    config(); const tx = transport({ me: () => { mutate(); return identity(); } });
+    await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }));
+    assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 0);
+  }
+});
+test('malformed config, wrong origin, wrong client, and bulk local backlog fail closed', async () => {
+  const tx = transport(); fs.writeFileSync(configFile, '{');
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /invalid/); config();
+  await assert.rejects(syncReceipts({ ...opts, base: 'https://other.test', fetchImpl: tx.fetchImpl }), /destination/);
+  await assert.rejects(syncReceipts({ ...opts, client: 'codex', fetchImpl: tx.fetchImpl }), /client/);
+  await assert.rejects(syncReceipts({ base, fetchImpl: tx.fetchImpl }), /current-session/);
+  assert.equal(tx.calls.length, 0);
+});
+test('cloud final receipts never drain machine-wide precedent signals', async () => {
+  appendSignals([{ signalId: 'unrelated', text: 'Private unrelated instruction', receiptId: 'other:session' }]);
+  const tx = transport(); const result = await syncReceipts({ ...opts, lane: 'final', now: Date.now() + 86400000, fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 1); assert.equal(result.signals.sent, 0);
+  assert.ok(tx.calls.every((c) => !c.url.includes('/precedents/')));
+});
+test('workspace and actor have separate acknowledgment/deduplication scopes', async () => {
+  const tx = transport(); assert.equal((await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl })).receipts, 1);
+  assert.equal((await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl })).receipts, 0);
+  config({ workspaceId: B }); const other = transport({ me: () => identity(B) });
+  assert.equal((await syncReceipts({ ...opts, fetchImpl: other.fetchImpl })).receipts, 1);
+  const newActor = transport({ me: () => identity(B, A) });
+  assert.equal((await syncReceipts({ ...opts, fetchImpl: newActor.fetchImpl })).receipts, 1);
+});
+test('prepared hook pins workspace and persists fail-closed command after config deletion', async () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  assert.throws(() => installReceiptHooks(bin, { prepare: true, consent: 'content', base }), /workspace/);
+  installReceiptHooks(bin, { prepare: true, consent: 'content', base, workspace: A });
+  assert.match(fs.readFileSync(process.env.TRAIL_CLAUDE_SETTINGS, 'utf8'), /--cloud-required/);
+  fs.unlinkSync(configFile);
+  await assert.rejects(runReceiptHook('{}', { client: 'claude', cloudRequired: true }), /missing/);
+});
+test('uninstall/disablement stops already queued cloud sends', async () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  installReceiptHooks(bin, { prepare: true, consent: 'content', base, workspace: A });
+  assert.ok(receiptBoundary({ root: base, workspace: A, cloudRequired: true }));
+  const tx = transport({ me: () => { fs.writeFileSync(path.join(process.env.TRAIL_HOME, 'receipt-hooks.json'), '{"enabled":false}'); return identity(); } });
+  await assert.rejects(syncReceipts({ ...opts, workspace: A, cloudRequired: true, fetchImpl: tx.fetchImpl }), /disabled|activation boundary/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 0);
+});
+test('delivery evidence uses authenticated send snapshot, not later rotated credentials', async () => {
+  const tx = transport(); const result = await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl });
+  process.env.ORGX_API_KEY = 'rotated-after-send';
+  recordReceiptDelivery({ client: 'claude', session_id: 'native-session', cwd: '/fixture' }, result);
+  const dir = path.join(home, '.orgx', 'cloud-receipts');
+  const record = JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8'));
+  assert.equal(record.workspaceId, A); assert.equal(record.actorId, actor); assert.equal(record.scopeHash, result.delivery.scopeHash);
+});
+test('wrong or missing receipt identity is not acknowledged and remains pending for readback', async () => {
+  const tx = transport({ post: () => new Response(JSON.stringify({ results: [{ ok: true, receipt_id: B, external_receipt_id: 'wrong', schema_version: receipt.schema_version }] })) });
+  const result = await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 0); assert.equal(result.refused[0].error, 'unverified_receipt_acknowledgement');
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('500 and transport-unknown sends pause without blind replay or fresh identity', async () => {
+  for (const post of [() => new Response('{}', { status: 500 }), () => { throw new Error('transport timed out'); }]) {
+    fs.rmSync(path.join(process.env.TRAIL_HOME, 'sync.json'), { force: true });
+    const tx = transport({ post });
+    try { await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }); } catch (error) { assert.match(error.message, /timed out/); }
+    await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+    assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+    const state = JSON.parse(fs.readFileSync(path.join(process.env.TRAIL_HOME, 'sync.json'), 'utf8'));
+    const pending = Object.values(state.destinations)[0].pendingReceipts[receipt.receipt_id];
+    assert.equal(pending.workspaceId, A); assert.equal(pending.actorId, actor); assert.ok(pending.idempotencyKey);
+  }
+});
+test('preparation refuses existing task state instead of assigning it to the new workspace', () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  fs.writeFileSync(path.join(process.env.TRAIL_HOME, 'sessions', 'old.json'), '{}');
+  assert.throws(() => installReceiptHooks(bin, { prepare: true, consent: 'content', base, workspace: A }), /fresh image/);
+  assert.equal(fs.existsSync(path.join(process.env.TRAIL_HOME, 'sessions', 'old.json')), true);
+  assert.equal(fs.existsSync(process.env.TRAIL_CLAUDE_SETTINGS), false);
+});
+test('rotating a key for the same actor cannot bypass an unresolved send', async () => {
+  const tx = transport({ post: () => { throw new Error('unknown outcome'); } });
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /unknown outcome/);
+  process.env.ORGX_API_KEY = 'synthetic-replacement-key';
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('single-route HTTP 200 cannot override an explicit refused outcome', async () => {
+  const tx = transport({ post: (n) => n === 1 ? new Response('{}', { status: 404 }) : new Response(JSON.stringify({ ok: false, receipt_id: B, external_receipt_id: receipt.receipt_id, schema_version: receipt.schema_version })) });
+  const result = await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 0); assert.equal(result.refused.length, 1);
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+});
+test('batch HTTP 422 with a per-item 500 remains uncertain', async () => {
+  const tx = transport({ post: () => new Response(JSON.stringify({ results: [{ ok: false, status: 500, error: { code: 'receipt_import_failed' } }] }), { status: 422 }) });
+  const result = await syncReceipts({ ...opts, fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 0);
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('corrupt or unreadable existing journals cannot erase an uncertain send', async () => {
+  for (const damage of [() => fs.writeFileSync(path.join(process.env.TRAIL_HOME, 'sync.json'), '{'), () => { fs.renameSync(path.join(process.env.TRAIL_HOME, 'sync.json'), path.join(process.env.TRAIL_HOME, 'saved-journal.json')); fs.mkdirSync(path.join(process.env.TRAIL_HOME, 'sync.json')); }]) {
+    fs.rmSync(path.join(process.env.TRAIL_HOME, 'sync.json'), { force: true, recursive: true });
+    const tx = transport({ post: () => { throw new Error('unknown outcome'); } });
+    await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /unknown outcome/);
+    damage(); await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /journal cannot be read safely/);
+    assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+  }
+});
+test('actor changes between authenticated attempts stop the send', async () => {
+  const tx = transport({ me: (n) => identity(A, n === 1 ? actor : B) });
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /actor changed/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 0);
+});
+test('preparation time prevents resumed pre-enable transcript history from uploading', async () => {
+  const file = path.join(home, 'resumed.jsonl');
+  fs.copyFileSync(new URL('./fixtures/claude.jsonl', import.meta.url), file);
+  const errors = []; const sent = []; const captureAfter = new Date(Date.now() - 1000).toISOString();
+  const capture = await startLiveCapture(file, 'claude', { receipts: true, base, workspace: A, cloudRequired: true, captureAfter, persist: false, syncImpl: async (value) => { sent.push(value); return { receipts: value.receipts.length }; }, onError: (error) => errors.push(error.message) });
+  try {
+    fs.appendFileSync(file, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: 'A new event after preparation does not authorize old history.' } }) + '\n');
+    await capture.update(); await capture.flushed();
+    assert.equal(sent.length, 0); assert.ok(errors.some((message) => message.includes('started after preparation')));
+  } finally { capture.close(); }
+});
+test('a fresh post-preparation native session passes the source boundary', async () => {
+  const file = path.join(home, 'fresh.jsonl'); const now = new Date().toISOString();
+  fs.writeFileSync(file, JSON.stringify({ type: 'user', timestamp: now, cwd: '/fixture', message: { role: 'user', content: 'Do this new synthetic task.' } }) + '\n');
+  const errors = []; const sent = [];
+  const capture = await startLiveCapture(file, 'claude', { receipts: true, base, workspace: A, cloudRequired: true, captureAfter: new Date(Date.now() - 1000).toISOString(), persist: false, syncImpl: async (value) => { sent.push(value); return { receipts: value.receipts.length }; }, onError: (error) => errors.push(error.message) });
+  try { await capture.flushed(); assert.equal(errors.length, 0); assert.equal(sent.length, 1); assert.equal(sent[0].workspace, A); assert.equal(sent[0].cloudRequired, true); } finally { capture.close(); }
+});
+test('re-enabling hooks creates a new activation boundary, not permission for the off period', async () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  const options = { prepare: true, consent: 'content', base, workspace: A };
+  installReceiptHooks(bin, options);
+  const hookFile = path.join(process.env.TRAIL_HOME, 'receipt-hooks.json');
+  const previous = JSON.parse(fs.readFileSync(hookFile, 'utf8'));
+  previous.preparedAt = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(hookFile, JSON.stringify(previous));
+  await uninstallReceiptHooks();
+  const before = Date.now(); installReceiptHooks(bin, options);
+  const current = JSON.parse(fs.readFileSync(hookFile, 'utf8'));
+  assert.ok(Date.parse(current.preparedAt) >= before);
+  assert.notEqual(current.preparedAt, previous.preparedAt);
+});
+test('malformed but present pending evidence still blocks replay', async () => {
+  const tx = transport({ post: () => { throw new Error('unknown outcome'); } });
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /unknown outcome/);
+  const file = path.join(process.env.TRAIL_HOME, 'sync.json'); const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  Object.values(state.destinations)[0].pendingReceipts[receipt.receipt_id] = null; fs.writeFileSync(file, JSON.stringify(state));
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('activation replacement during identity verification stops content', async () => {
+  const bin = new URL('../bin/trail.mjs', import.meta.url).pathname;
+  installReceiptHooks(bin, { prepare: true, consent: 'content', base, workspace: A });
+  const tx = transport({ me: () => {
+    const file = path.join(process.env.TRAIL_HOME, 'receipt-hooks.json'); const hook = JSON.parse(fs.readFileSync(file, 'utf8'));
+    hook.preparedAt = '2000-01-01T00:00:00.000Z'; fs.writeFileSync(file, JSON.stringify(hook)); return identity();
+  } });
+  await assert.rejects(syncReceipts({ ...opts, cloudRequired: true, fetchImpl: tx.fetchImpl }), /activation boundary/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 0);
+});
+test('Codex metadata keeps old sessions excluded and allows newly started sessions', async () => {
+  config({ client: 'codex' });
+  const original = fs.readFileSync(new URL('./fixtures/codex.jsonl', import.meta.url), 'utf8');
+  for (const fresh of [false, true]) {
+    const file = path.join(home, `codex-${fresh}.jsonl`); const now = new Date().toISOString();
+    fs.writeFileSync(file, fresh ? original.replace(/2026-09-20T10:\d\d:00\.000Z/g, now) : original);
+    const sent = []; const errors = [];
+    const capture = await startLiveCapture(file, 'codex', { receipts: true, base, workspace: A, cloudRequired: true, captureAfter: new Date(Date.now() - 1000).toISOString(), persist: false, syncImpl: async (value) => { sent.push(value); return { receipts: value.receipts.length }; }, onError: (error) => errors.push(error.message) });
+    try { await capture.flushed(); assert.equal(sent.length, fresh ? 1 : 0); if (fresh) assert.equal(errors.length, 0); else assert.ok(errors.some((e) => e.includes('started after preparation'))); } finally { capture.close(); }
+  }
+});
+test('documented mixed batch HTTP 200 records valid successes but retains item-500 uncertainty', async () => {
+  const other = { ...receipt, receipt_id: 'test:other' };
+  const tx = transport({ post: (_n, call) => new Response(JSON.stringify({ ok: false, results: call.body.receipts.map(({ receipt: r }, index) => index === 0 ? { ok: true, status: 201, receipt_id: B, external_receipt_id: r.receipt_id, schema_version: r.schema_version } : { ok: false, status: 500, error: { code: 'receipt_import_failed' } }) })) });
+  const result = await syncReceipts({ ...opts, receipts: [receipt, other], fetchImpl: tx.fetchImpl });
+  assert.equal(result.receipts, 1); assert.equal(result.refused.length, 1);
+  await assert.rejects(syncReceipts({ ...opts, receipts: [receipt, other], fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
