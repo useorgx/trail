@@ -13,9 +13,10 @@ if (process.argv[2] === 'receipt-hook') {
   const value = (name) => { const at = process.argv.indexOf(`--${name}`); return at >= 0 ? process.argv[at + 1] : undefined; };
   const client = value('client') || 'claude';
   try {
-    if (process.argv[3] === 'worker') { const worker = await receiptHookWorker(); if (worker) await new Promise((resolve) => worker.server.once('close', resolve)); }
-    else if (process.argv[3] === 'run') { let input = ''; for await (const chunk of process.stdin) input += chunk; await runReceiptHook(input, { client }); }
-    else if (['install', 'prepare'].includes(process.argv[3])) console.log(JSON.stringify(installReceiptHooks(fileURLToPath(import.meta.url), { base: value('base'), client, prepare: process.argv[3] === 'prepare', consent: value('consent') })));
+    if (process.argv[3] === 'reconcile') { const { reconcileCloudReceipts } = await import('../src/sync.mjs'); console.log(JSON.stringify(await reconcileCloudReceipts({ base: value('base'), workspace: value('workspace'), cursor: value('cursor'), ...(value('limit') ? { limit: Number(value('limit')) } : {}) }))); }
+    else if (process.argv[3] === 'worker') { const worker = await receiptHookWorker(); if (worker) await new Promise((resolve) => worker.server.once('close', resolve)); }
+    else if (process.argv[3] === 'run') { let input = ''; for await (const chunk of process.stdin) input += chunk; await runReceiptHook(input, { client, cloudRequired: process.argv.includes('--cloud-required') }); }
+    else if (['install', 'prepare'].includes(process.argv[3])) console.log(JSON.stringify(installReceiptHooks(fileURLToPath(import.meta.url), { base: value('base'), client, prepare: process.argv[3] === 'prepare', consent: value('consent'), workspace: value('workspace') })));
     else if (process.argv[3] === 'uninstall') console.log(JSON.stringify(await uninstallReceiptHooks({ client })));
     else console.log(JSON.stringify(receiptHookStatus({ client })));
   } catch (error) { process.stderr.write(`trail receipt-hook: ${error.message}\n`); process.exitCode = 1; }
@@ -53,7 +54,7 @@ const HELP = `orgx trail — see what your coding agents did and where they got 
   trail --demo       try it on a made-up history (reads nothing from your machine)
   trail explore      open the explorer
   trail watch        follow incremental steps, goals and receipts (--receipts streams checkpoints to OrgX)
-  trail receipt-hook install|uninstall|status  enable automatic Claude Code receipt checkpoints (opt-in upload)
+  trail receipt-hook prepare|install|uninstall|status|reconcile  configure or reconcile opt-in Claude/Codex receipts
   trail open         open the ledger view in your browser (localhost only)
   trail summary      print the numbers as JSON
   trail deepen       get surer outcomes: Jev reads each step and piece of work · opt-in · quote shown first

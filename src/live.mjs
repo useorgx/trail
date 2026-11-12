@@ -187,9 +187,14 @@ export async function receiptHook(input, { syncImpl, ...options } = {}) {
 }
 
 /** File changes wake capture immediately; uploads are queued separately so network time cannot stall the view. */
-export async function startLiveCapture(file, client, { receipts = false, base, onUpdate = () => {}, onError = () => {}, onDelivery = () => {}, syncImpl, settleMs = SETTLE_MS, persist = true } = {}) {
+export async function startLiveCapture(file, client, { receipts = false, base, workspace, cloudRequired = false, captureAfter, onUpdate = () => {}, onError = () => {}, onDelivery = () => {}, syncImpl, settleMs = SETTLE_MS, persist = true } = {}) {
   const live = new LiveSession(file, client, { persist });
   const sync = syncImpl || (await import('./sync.mjs')).syncReceipts;
+  const assertCaptureBoundary = () => {
+    if (!cloudRequired) return;
+    const enabled = Date.parse(captureAfter); const started = Date.parse(live.session?.start);
+    if (!Number.isFinite(enabled) || !Number.isFinite(started) || started < enabled || started > Date.now() + 60_000) throw new Error('Cloud receipts require a native session started after preparation. Existing session history was not uploaded.');
+  };
   let closed = false; let working = false; let dirty = false; let settleTimer; let retryTimer;
   let queue = Promise.resolve(); let retryDelay = 1000;
   const enqueue = (documents, lane) => {
@@ -197,7 +202,8 @@ export async function startLiveCapture(file, client, { receipts = false, base, o
     queue = queue.then(async () => {
       if (closed) return;
       try {
-        const result = await sync({ base, receipts: documents, lane, limit: documents.length, now: Date.now() + SETTLE_MS - settleMs });
+        assertCaptureBoundary();
+        const result = await sync({ base, workspace, cloudRequired, captureAfter, client, receipts: documents, lane, limit: documents.length, now: Date.now() + SETTLE_MS - settleMs });
         if (result.refused?.length) throw new Error(`Receipt upload refused: ${JSON.stringify(result.refused)}`);
         onDelivery(result);
         retryDelay = 1000;
@@ -227,6 +233,7 @@ export async function startLiveCapture(file, client, { receipts = false, base, o
       while (dirty && !closed) {
         dirty = false; const result = await live.update();
         if (!result.changed) continue;
+        assertCaptureBoundary();
         onUpdate(result);
         const settled = new Set(live.settled(Date.now(), settleMs).map((r) => r.receipt_id));
         enqueue(result.checkpoints.filter((r) => !settled.has(r.receipt_id)), 'provisional');
