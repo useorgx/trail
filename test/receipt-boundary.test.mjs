@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { canonicalizeAgentWorkJson } from '@useorgx/agent-work-receipt';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'trail-boundary-'));
 process.env.HOME = home;
@@ -358,4 +360,68 @@ test('recovery pagination reaches an exact match after 50 unresolved older entri
   assert.equal(first.unresolved.length, 50); assert.ok(first.nextCursor); assert.equal(documentReads, 0);
   const second = await reconcileCloudReceipts({ base, workspace: A, cursor: first.nextCursor, fetchImpl });
   assert.equal(second.confirmed.length, 1); assert.equal(second.nextCursor, null); assert.equal(second.remaining, 50); assert.equal(documentReads, 1);
+});
+
+// Server-shaped fixture: admitCheckedReceipt calls sealOrgxAgentWorkReceipt
+// with attests=ingested, preserving Trail's digest and appending one seal.
+function ingestAndSeal(document, changes = {}) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const raw = publicKey.export({ format: 'jwk' });
+  const kid = `orgx-receipt-${crypto.createHash('sha256').update(Buffer.from(raw.x, 'base64url')).digest('hex').slice(0, 16)}`;
+  const key = { ...raw, kid, alg: 'EdDSA', use: 'sig' };
+  const seal = { algorithm: 'ed25519', encoding: 'base64url', key_id: kid,
+    signer: { type: 'service', id: 'orgx', display_name: 'OrgX' },
+    signed_at: '2026-11-12T00:00:00.000Z', attests: 'ingested', ...changes };
+  const payload = canonicalizeAgentWorkJson({ profile: 'agent-work-receipt-signature/v0.1',
+    protected: seal, content_hash: { algorithm: 'sha-256', value: document.integrity.content_hash.value } });
+  seal.value = crypto.sign(null, Buffer.from(payload), privateKey).toString('base64url');
+  return { key, document: { ...document, integrity: { content_hash: document.integrity.content_hash, signatures: [seal] } } };
+}
+test('ingest, OrgX seal, and scoped readback confirms the unchanged submission without replay', async () => {
+  const { document, tx } = await uncertainHookAttempt(); const stored = ingestAndSeal(document); const reads = [];
+  assert.notEqual(canonicalizeAgentWorkJson(document), canonicalizeAgentWorkJson(stored.document));
+  const result = await reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url, init) => {
+    assert.equal(init.method, 'GET'); assert.equal(init.redirect, 'error'); reads.push(url);
+    if (url.endsWith('/api/v1/me')) return identity();
+    if (url.endsWith('/.well-known/orgx-receipt-keys.json')) {
+      assert.equal(init.headers, undefined); return new Response(JSON.stringify({ keys: [stored.key] }));
+    }
+    assert.ok(url.endsWith(`workspace_id=${A}`));
+    return new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: stored.document } }));
+  } });
+  assert.equal(result.confirmed.length, 1); assert.equal(result.remaining, 0); assert.equal(reads.length, 5);
+  assert.equal((await syncReceipts({ ...opts, cloudRequired: true, fetchImpl: tx.fetchImpl })).receipts, 0);
+  assert.equal(tx.calls.filter((c) => c.method === 'POST').length, 1);
+});
+test('sealed readback rejects unpermitted transformations, forged seals and unavailable trusted keys', async () => {
+  const { document, tx } = await uncertainHookAttempt(); const stored = ingestAndSeal(document);
+  const cases = [
+    (s) => { s.document.outcome.summary = 'Changed content'; },
+    (s) => { s.document.integrity.content_hash.value = 'a'.repeat(64); },
+    (s) => { s.document.integrity.extra = true; },
+    (s) => { s.document.integrity.signatures.push(s.document.integrity.signatures[0]); },
+    (s) => { s.document.integrity.signatures[0].signer.id = 'not-orgx'; },
+    (s) => { s.document.integrity.signatures[0].attests = 'observed'; },
+    (s) => { s.document.integrity.signatures[0].signed_at = '2026-11-12T00:01:00.000Z'; },
+    (s) => { s.document.integrity.signatures[0].extra = true; },
+    (s) => { s.document.integrity.signatures[0].value = Buffer.alloc(64).toString('base64url'); },
+    (s) => { s.document.integrity.signatures[0].value += '='; },
+    (s) => { s.keys = []; },
+    (s) => { s.keys.push(s.keys[0]); },
+    (s) => { s.keys[0].x = crypto.randomBytes(32).toString('base64url'); },
+    (s) => { s.keys[0].d = 'private-material-is-not-a-public-key'; },
+    (s) => { s.keyStatus = 503; },
+    (s) => { s.document.outcome.claim_level = 'reported'; },
+  ];
+  for (const mutate of cases) {
+    const scenario = JSON.parse(JSON.stringify({ document: stored.document, keys: [stored.key], keyStatus: 200 })); mutate(scenario);
+    const result = await reconcileCloudReceipts({ base, workspace: A, fetchImpl: async (url, init) => {
+      assert.equal(init.method, 'GET');
+      if (url.endsWith('/api/v1/me')) return identity();
+      if (url.endsWith('/.well-known/orgx-receipt-keys.json')) return new Response(JSON.stringify({ keys: scenario.keys }), { status: scenario.keyStatus });
+      return new Response(JSON.stringify({ ok: true, data: { receipt_id: B, receipt: scenario.document } }));
+    } });
+    assert.equal(result.confirmed.length, 0); assert.equal(result.remaining, 1);
+  }
+  await assert.rejects(syncReceipts({ ...opts, fetchImpl: tx.fetchImpl }), /scoped ledger readback/);
 });

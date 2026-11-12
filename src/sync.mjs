@@ -17,6 +17,7 @@ import { receiptFingerprint, withIntegrity } from './integrity.mjs';
 import { redactDeep } from './redact.mjs';
 import { withProcessLock } from './process-lock.mjs';
 import { receiptBoundary, verifyReceiptBoundary } from './receipt-boundary.mjs';
+import { matchesReceiptReadback } from './receipt-readback.mjs';
 
 const SYNC_STATE = path.join(HOME, 'sync.json');
 const SYNC_LOCK = path.join(HOME, 'sync.lock');
@@ -318,7 +319,7 @@ export async function reconcileCloudReceipts({ base, workspace, limit = 50, curs
       let matches = false;
       try { matches = response.ok && output?.ok === true && document?.receipt_id === id &&
         typeof hosted === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(hosted) &&
-        sha(canonicalizeAgentWorkJson(document)) === pending.wireHash && receiptFingerprint(document) === pending.fingerprint; } catch {}
+        await matchesReceiptReadback(document, pending, { root, fetchImpl }); } catch {}
       if (!matches) { unresolved.push({ id, reason: 'exact_document_not_observed' }); continue; }
       // Recheck the activation and actor after asynchronous readback before acknowledging locally.
       await verifyReceiptBoundary(boundary, cred, fetchImpl, identity.actorId);
